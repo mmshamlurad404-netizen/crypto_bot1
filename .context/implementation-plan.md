@@ -1,0 +1,67 @@
+# Implementation Plan — Cryptohopper feature parity
+
+Updated: 2026-08-21
+Basis: `.context/gap-analysis.md` priority ranking. Scope = on-prem, Nobitex-only, safety-first (DRY_RUN / TRADING_ENABLED stay defaulted to safe).
+
+## Phase 1 — Validate & instrument what we already trade (do first)
+
+### P1-1 Backtester
+- New `src/backtest/engine.ts`: replay historical closes through `strategy.hybrid.evaluate` + risk gates without executor; feed synthetic decisions into a paper `PortfolioManager`.
+- New `src/backtest/data.ts`: pull `GET /v2/trades/{symbol}` history (already used by priceFeed seed) into OHLC-ish series; support loading from SQLite `price` snapshots if we start persisting them.
+- New `src/backtest/run.ts` CLI: `npx tsx src/backtest/run.ts --symbol btc/rls --days 90` → prints trades, win rate, profit factor, max drawdown, final equity.
+- Wire: read config via `DOTENV_CONFIG_PATH`; DRY_RUN semantics reused. No live orders ever.
+
+### P1-2 Performance analytics + trade history export
+- New `src/report/metrics.ts`: from AuditDb compute win rate, profit factor, avg win/loss, max drawdown (from portfolio_snapshots), Sharpe (daily returns), exposure.
+- Extend `DailyReporter` to include metrics section; add `src/export/trades.ts` CSV export (`npx tsx src/export/trades.ts > trades.csv`).
+- Tests: `tests/metrics.test.ts` on synthetic audit rows.
+
+### P1-3 Trailing stop-loss / trailing take-profit
+- `src/risk/manager.ts`: track `trailingStopPct` and optional `trailingTpPct` per position; on each tick update activation price if unrealized PnL exceeds activation threshold (e.g., +X% from entry), then ratchet.
+- Config: `TRAILING_STOP_PCT`, `TRAILING_STOP_ACTIVATE_PCT`, `TRAILING_TP_PCT`, `TRAILING_TP_ACTIVATE_PCT` in `.env.example` + config.ts schema.
+- Replace/augment `checkStopLoss` with `checkTrailingStops`; keep fixed SL as floor.
+- Tests: `tests/risk.test.ts` trailing ratchet scenarios (activation, pullback, never-activated).
+
+### P1-4 DCA (averaging down)
+- New `src/strategy/dca.ts` + config `DCA_LEVELS` (JSON array of `{belowPct, buyPct}`), `DCA_MAX_ORDERS_PER_POSITION`, `DCA_ENABLED`.
+- On tick, for open position: if price < entry × (1 − belowPct) and a fresh level not yet consumed, augment position via normal risk gates (skip open-position gate only for DCA buys).
+- DCA buys recorded as `orders.kind = 'dca'`; position avg entry recomputed in `portfolio.applyTrade`.
+- Tests: `tests/dca.test.ts` ladder descent/augment/avg-price recompute.
+
+### P1-5 Trigger engine (rule DSL)
+- New `src/triggers/engine.ts`: declarative rules read from env/JSON (e.g., `TRIGGER_RSI_OVERSOLD_NOTIFY`): condition (price below, RSI cross, sentiment above, volume spike) → action (notify / buy / sell / halt).
+- Registry of predicates + actions; engine evaluated in `tick` after price poll, before strategy.
+- Replaces hard-coded exit shortcuts over time; first version: notify + manual overrides.
+- Tests: `tests/triggers.test.ts` condition→action mapping.
+
+## Phase 2 — Generalize strategy & signal intake
+
+### P2-1 Strategy DSL + config pools
+- `src/strategy/dsl.ts`: declarative strategy schema (JSON): entry/exit composed of indicator nodes (RSI, volatility, price vs MA, sentiment) with and/or combinators; compile to `evaluate`-compatible object.
+- Add MA (SMA/EMA) indicators to `src/indicators.ts` (needed by DSL and backtester realism).
+- `src/config/pools.ts`: multiple named configs; assign per-symbol or schedule rotation (mimics Config Pools).
+- Keep existing hybrid as the default compiled strategy so behavior is unchanged until user opts in.
+
+### P2-2 TradingView webhook endpoint
+- `src/sentiment/server.ts`: add `POST /api/v1/tradingview` (Bearer auth) accepting TradingView alert payloads; map alert message/`{{strategy.order.action}}` → BUY/SELL intent that flows through normal risk gates.
+- Document webhook URL/format in README; sample script `scripts/feed_tradingview.sh`.
+
+### P2-3 Signals framework
+- `src/signals/`: generic subscriber model (source: sentiment feed, TradingView, manual API, scheduled) each yielding a `SignalIntent`; strategy consumes unified intents. Refactor sentiment into a subscriber.
+- `Signals` replace `POST /api/v1/sentiment`-only flow; keep API compatible.
+
+## Phase 3 — Stretch (only if earlier phases land clean)
+
+- Short selling via Nobitex margin API (`/v2/margin/...`): new risk model, requires separate config + heavy testing; default OFF.
+- Market making / arbitrage: orderbook depth + maker fills; highest complexity, lowest priority.
+- Multi-bot orchestration: run N configs in one process (Bulk Bot Manager analogue).
+- AI strategy: optional LLM advisor consuming indicators + sentiment, emitting weights (user supplies own key via `USER_LLM_*`, per no-read-llm-env rule).
+
+## Explicitly NOT planned
+Multi-exchange abstraction, marketplace/social/mobile/charting SaaS, copy trading, taxes reporting.
+
+## Verification per phase
+- Unit tests for every new module (node:test, in-memory DB).
+- `npm run typecheck` clean; `npm run build` clean.
+- Backtester + export validated against a 90-day live Nobitex history pull.
+- All new behavior gated behind env flags defaulting to safe/off.

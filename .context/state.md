@@ -1,13 +1,15 @@
 # State — 2026-08-21
 
-## Intent    — set up `.context/` as the project's on-disk memory per the lean-context skill (map + checkpoint)
-## Touched   — .context/map.md — created: compressed project map (delegated to Explore agent) — done
-## Touched   — .context/state.md — created: this checkpoint file — done
-## Touched   — skills/lean-context/ — pulled from remote (SKILL.md, references/) — done
-## Decisions — commit `.context/` to the repo (owner wants it to serve as shared project memory; skill allows tracking)
-## Decisions — build map via Explore subagent per skill (bulk reading kept out of the main window) — rejected: hand-building
-## Verified  — skills/lean-context/SKILL.md:15 — map must live at `.context/map.md`
-## Verified  — skills/lean-context/references/project-map.md:53 — cap map at ≤300 lines; currently well under
-## Verified  — src/index.ts:136 — tick loop is the core decision loop (repro from map)
-## Open      — whether the owner wants `.context/` gitignored later (currently tracked by decision)
-## Next      — commit `.context/` + skill files and push to origin/master
+## Intent    — compare our bot against Cryptohopper, write gap analysis + implementation plan, keep `.context/` updated at each step
+## Touched   — .context/map.md — unchanged (shape covers current modules; will update when new modules land) — done
+## Touched   — .context/state.md — updated: this checkpoint — done
+## Touched   — .context/gap-analysis.md — created: 29-item feature surface vs Cryptohopper, priority ranking, out-of-scope list — done
+## Touched   — .context/implementation-plan.md — created: 3 phases (P1 validate/instrument, P2 generalize strategy+signals, P3 stretch) — done
+## Decisions — scope: on-prem, Nobitex-only, safety-first; marketplace/social/mobile/multi-exchange explicitly out of scope
+## Decisions — priority: backtester + performance analytics + trailing stops first (highest value/lowest risk); DCA and trigger engine next
+## Decisions — keep existing hybrid strategy as default compiled strategy so P1 changes don't alter live behavior until user opts in
+## Verified  — docs.cryptohopper.com/docs/trading-bot — feature areas: base config (buy/sell), config pools, signals, triggers, DCA, shorting, paper trading, auto-sync, dashboards, stats
+## Verified  — docs.cryptohopper.com/docs/my-library — Strategy Builder, Algorithm Intelligence (AI), TradingView Alerts, Backtester, technical indicators, candle patterns
+## Verified  — cryptohopper.com homepage — 16+ exchanges, copy trading, market making, arbitrage, bulk bot manager, marketplace, social, mobile, MCP — all GAP except paper trading + core buy/sell automation
+## Open      — whether user wants P1 items now, and in which order; backtester vs analytics first
+## Next      — await user go-ahead on Phase 1 scope; then implement P1-1 backtester (or user's chosen first item), updating .context/state.md as we go
