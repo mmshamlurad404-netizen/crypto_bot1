@@ -31,14 +31,16 @@ export class RiskManager {
   private priceFeed: PriceFeed;
   private portfolio: PortfolioManager;
   private config: RiskConfigShape;
+  private now: () => number;
   private lastTradeAt: Map<string, number> = new Map();
   private tradingHalted: string | null = null;
 
-  constructor(db: AuditDb, priceFeed: PriceFeed, portfolio: PortfolioManager, config: RiskConfigShape) {
+  constructor(db: AuditDb, priceFeed: PriceFeed, portfolio: PortfolioManager, config: RiskConfigShape, now: () => number = Date.now) {
     this.db = db;
     this.priceFeed = priceFeed;
     this.portfolio = portfolio;
     this.config = config;
+    this.now = now;
   }
 
   sizeByVolatility(volatility: number | null): number {
@@ -57,7 +59,7 @@ export class RiskManager {
 
   private logEvent(symbol: string | null, kind: string, message: string, data: Record<string, unknown> | null): void {
     this.db.insertRiskEvent({
-      ts: new Date().toISOString(),
+      ts: new Date(this.now()).toISOString(),
       symbol,
       kind,
       message,
@@ -70,20 +72,19 @@ export class RiskManager {
   }
 
   private dailyTradeCount(): number {
-    const dayStart = new Date().toISOString().slice(0, 10);
+    const dayStart = new Date(this.now()).toISOString().slice(0, 10);
     return this.db.countTradesToday(`${dayStart}T00:00:00.000Z`);
   }
 
   private cooldownActive(pair: SymbolPair): boolean {
     const last = this.lastTradeAt.get(pair.key);
     if (!last) return false;
-    return Date.now() - last < this.config.cooldownMinutes * 60 * 1000;
+    return this.now() - last < this.config.cooldownMinutes * 60 * 1000;
   }
 
   evaluateBuy(pair: SymbolPair, orderValueInQuote: number, volatility: number | null, rsi: number | null): RiskVerdict {
     const equity = this.portfolio.equity();
     const state = this.portfolio.state();
-    const now = new Date().toISOString();
 
     if (this.tradingHalted) {
       return { allowed: false, reason: `trading halted: ${this.tradingHalted}`, halted: true, sizePct: 0 };
@@ -172,6 +173,6 @@ export class RiskManager {
   }
 
   recordTrade(pair: SymbolPair): void {
-    this.lastTradeAt.set(pair.key, Date.now());
+    this.lastTradeAt.set(pair.key, this.now());
   }
 }

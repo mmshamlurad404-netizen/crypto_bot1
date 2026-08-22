@@ -1,6 +1,11 @@
 import { NobitexClient } from "../exchange/nobitex.js";
 import { SymbolPair, PricePoint, MarketStat } from "../types.js";
 
+export function toUdfSymbol(pair: SymbolPair): string {
+  const dst = pair.dst === "rls" ? "irt" : pair.dst;
+  return `${pair.src}${dst}`.toUpperCase();
+}
+
 export class PriceFeed {
   private client: NobitexClient;
   private symbols: SymbolPair[];
@@ -21,7 +26,7 @@ export class PriceFeed {
   private async seed(): Promise<void> {
     for (const pair of this.symbols) {
       try {
-        const trades = await this.client.recentTrades(this.udfSymbol(pair));
+        const trades = await this.client.recentTrades(toUdfSymbol(pair));
         const points = trades
           .map((t) => ({ ts: t.time, price: Number(t.price) }))
           .filter((p) => Number.isFinite(p.price) && p.price > 0)
@@ -35,11 +40,6 @@ export class PriceFeed {
         console.log(`[pricefeed] seed failed for ${pair.key}: ${(err as Error).message}`);
       }
     }
-  }
-
-  private udfSymbol(pair: SymbolPair): string {
-    const dst = pair.dst === "rls" ? "irt" : pair.dst;
-    return `${pair.src}${dst}`.toUpperCase();
   }
 
   private append(key: string, price: number, ts: number): void {

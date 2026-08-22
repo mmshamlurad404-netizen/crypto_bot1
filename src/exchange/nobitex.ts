@@ -111,6 +111,19 @@ export class NobitexClient {
     return data.trades;
   }
 
+  async udfHistory(
+    symbol: string,
+    resolution: number,
+    from: number,
+    to: number
+  ): Promise<{ s: string; t: number[]; o: number[]; h: number[]; l: number[]; c: number[]; v: number[] }> {
+    return this.request({
+      path: "/market/udf/history",
+      query: { symbol, resolution, from, to },
+      publicRateLimit: true,
+    });
+  }
+
   async wallets(): Promise<WalletBalance[]> {
     const data = await this.request<{ status: string; wallets: WalletBalance[] }>({
       path: "/users/wallets/list",

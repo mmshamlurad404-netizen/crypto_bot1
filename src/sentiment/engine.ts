@@ -14,13 +14,15 @@ export class SentimentEngine {
   private windowMs: number;
   private halfLifeMs: number;
   private minConfidence: number;
+  private now: () => number;
   private events: SentimentInput[] = [];
 
-  constructor(db: AuditDb, windowMs: number, halfLifeMs: number, minConfidence: number) {
+  constructor(db: AuditDb, windowMs: number, halfLifeMs: number, minConfidence: number, now: () => number = Date.now) {
     this.db = db;
     this.windowMs = windowMs;
     this.halfLifeMs = halfLifeMs;
     this.minConfidence = minConfidence;
+    this.now = now;
     this.loadHistory();
   }
 
@@ -41,7 +43,7 @@ export class SentimentEngine {
   ingest(input: SentimentInput): SentimentSnapshot {
     const sentiment = Math.max(-1, Math.min(1, input.sentiment));
     const confidence = Math.max(0, Math.min(1, input.confidence ?? 1));
-    const now = Date.now();
+    const now = this.now();
     const event: SentimentInput = {
       account: input.account,
       symbol: input.symbol.toLowerCase(),
@@ -70,7 +72,7 @@ export class SentimentEngine {
     }
   }
 
-  snapshot(symbol: string, now = Date.now()): SentimentSnapshot {
+  snapshot(symbol: string, now = this.now()): SentimentSnapshot {
     const relevant = this.events.filter(
       (e) =>
         e.symbol === symbol.toLowerCase() &&

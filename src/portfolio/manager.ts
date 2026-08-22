@@ -14,6 +14,7 @@ export class PortfolioManager {
   private holdings: Map<string, number> = new Map();
   private wallets: WalletBalance[] = [];
   private realizedToday = 0;
+  private now: () => number;
 
   constructor(
     db: AuditDb,
@@ -22,7 +23,8 @@ export class PortfolioManager {
     symbols: SymbolPair[],
     quote: QuoteCurrency,
     dryRun: boolean,
-    virtualStartEquity: number
+    virtualStartEquity: number,
+    now: () => number = Date.now
   ) {
     this.db = db;
     this.client = client;
@@ -31,6 +33,7 @@ export class PortfolioManager {
     this.quote = quote;
     this.dryRun = dryRun;
     this.virtualStartEquity = virtualStartEquity;
+    this.now = now;
     this.seedHoldings();
   }
 
@@ -55,7 +58,7 @@ export class PortfolioManager {
   }
 
   private loadRealizedToday(): number {
-    const dayKey = this.dayKey(new Date());
+    const dayKey = this.dayKey(new Date(this.now()));
     const v = this.db.getMeta(`day:${dayKey}:realized_pnl`);
     return v ? Number(v) : 0;
   }
@@ -142,7 +145,7 @@ export class PortfolioManager {
         const newEntry = (existing.entryPrice * existing.amount + gross) / newAmount;
         this.db.updatePositionAmount(existing.id, newAmount, newEntry);
       } else {
-        this.db.insertPosition({ symbol: pair.key, openTs: new Date().toISOString(), entryPrice: price, amount, orderId });
+        this.db.insertPosition({ symbol: pair.key, openTs: new Date(this.now()).toISOString(), entryPrice: price, amount, orderId });
       }
     } else {
       const pos = this.db.getOpenPosition(pair.key);
@@ -152,13 +155,13 @@ export class PortfolioManager {
         const realized = (price - pos.entryPrice) * amount;
         const remaining = pos.amount - amount;
         if (remaining <= 1e-12) {
-          this.db.closePosition(pos.id, new Date().toISOString(), price, realized, "sold");
+          this.db.closePosition(pos.id, new Date(this.now()).toISOString(), price, realized, "sold");
         } else {
-          this.db.closePosition(pos.id, new Date().toISOString(), price, realized, "partial-sold");
-          this.db.insertPosition({ symbol: pair.key, openTs: new Date().toISOString(), entryPrice: price, amount: remaining, orderId });
+          this.db.closePosition(pos.id, new Date(this.now()).toISOString(), price, realized, "partial-sold");
+          this.db.insertPosition({ symbol: pair.key, openTs: new Date(this.now()).toISOString(), entryPrice: price, amount: remaining, orderId });
         }
         this.realizedToday += realized;
-        this.db.setMeta(`day:${this.dayKey(new Date())}:realized_pnl`, String(this.realizedToday));
+        this.db.setMeta(`day:${this.dayKey(new Date(this.now()))}:realized_pnl`, String(this.realizedToday));
       }
     }
   }

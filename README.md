@@ -33,6 +33,7 @@ src/
   execution/executor.ts # order placement (dry-run simulation / live)
   alerts/telegram.ts    # Telegram notifier
   alerts/report.ts      # daily report + portfolio snapshot
+  backtest/             # history loader + strategy replay engine + CLI
 ```
 
 ```
@@ -158,10 +159,41 @@ positions, today's realized/unrealized PnL, day change vs previous snapshot,
 today's trades, and a per-symbol market + sentiment snapshot. A portfolio
 snapshot is persisted at the same time.
 
+## Backtesting
+
+Replays the same `HybridStrategy` + risk gates used by the live bot over
+historical bars, so results reflect the exact configuration in `.env` (RSI
+period, stop-loss, take-profit, cooldown, exposure, trade caps, fees, ...).
+
+```bash
+# 90 days of hourly BTC-RLS bars, constant bullish sentiment 0.5
+npx tsx src/backtest/run.ts --symbol btc/rls --days 90 --resolution 60 --sentiment 0.5
+
+# sentiment from a JSONL feed (same format as SENTIMENT_JSON_FEED), 4h bars
+npx tsx src/backtest/run.ts --symbol btc/rls --days 90 --resolution 240 --sentiment-file feed.jsonl
+
+# machine-readable output for further analysis
+npx tsx src/backtest/run.ts --symbol btc/rls --days 30 --sentiment 0.5 --json
+```
+
+Run `--help` for all options. Output: return, win rate, profit factor, max
+drawdown, and per-round-trip detail with `--verbose`.
+
+Notes:
+
+- A sentiment source is required (`--sentiment` constant, or
+  `--sentiment-file`). With neutral sentiment the entry gate never fires.
+- The exchange retains ~500 bars per symbol, so `resolution` bounds the span:
+  60m ≈ 21 days, 240m ≈ 83 days.
+- Fills are simulated at the bar close; no order-book spread is modeled, and
+  the current bar is included in indicators (close-based).
+- The backtest uses an in-memory database only — it never touches `data/audit.db`
+  and never places orders.
+
 ## Tests
 
 ```bash
-npm test              # indicators, sentiment, risk, strategy
+npm test              # indicators, sentiment, risk, strategy, backtest
 npm run typecheck     # tsc --noEmit
 npm run build         # compile to dist/
 ```

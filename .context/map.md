@@ -1,11 +1,12 @@
 # Project Map — nobitex-sentiment-bot
-Updated: 2026-08-21
+Updated: 2026-08-22
 
 ## Shape
 ```
 /workspace
 ├── src/                    # TypeScript source (ESM, NodeNext)
 │   ├── alerts/             # Telegram notifier + daily HTML report
+│   ├── backtest/           # History replay engine + CLI (P1-1)
 │   ├── exchange/           # Nobitex REST client (apiv2.nobitex.ir)
 │   ├── execution/          # Order placement: live vs simulated fills
 │   ├── market/             # Per-symbol price series, poll + trade seeding
@@ -48,8 +49,12 @@ src/portfolio/manager.ts — dry-run virtual holdings vs live wallets; applyTrad
 src/execution/executor.ts — fills at best bid/ask, dry-run simulation or live addOrder, fee calc
 src/alerts/telegram.ts — sendMessage with HTML, logs every alert to DB
 src/alerts/report.ts — DailyReporter: snapshot, HTML report, prev-day equity meta
+src/backtest/data.ts — loadHistory: paged /market/udf/history fetch (exchange keeps ~500 bars) + loadSentimentFile
+src/backtest/engine.ts — runBacktest: replays real strategy/risk/portfolio over bars on an injectable clock
+src/backtest/run.ts — CLI: --symbol/--days/--resolution/--sentiment/--sentiment-file/--json/--verbose
 scripts/feed_sentiment.sh — sample curl POST of sentiment batch to webhook
 tests/indicators.test.ts — RSI/volatility edge cases
+tests/backtest.test.ts — backtest replay (win/loss/flat) + UDF mapping
 tests/risk.test.ts — risk gate order and halt behavior
 tests/strategy.test.ts — hybrid strategy buy/hold/sell paths
 tests/sentiment.test.ts — sentiment aggregation behavior
@@ -81,6 +86,11 @@ src/risk/manager.ts:154 checkStopLoss — stop at entryPrice × (1 − stopLossP
 src/portfolio/manager.ts:134 applyTrade — updates holdings, merges/re-opens positions, stores daily realized PnL meta
 src/execution/executor.ts:67 execute — best bid/ask fill price, live addOrder w/ clientOrderId, fee = total × feePct
 src/alerts/report.ts:40 generateReport — writes portfolio_snapshots and prev_day_equity meta
+src/backtest/data.ts:11 loadHistory — pages /market/udf/history; retention ~500 bars (60m≈21d, 240m≈83d); rls→irt via toUdfSymbol
+src/backtest/engine.ts:31 runBacktest — builds strategy/risk/portfolio with `now` clock; fills at bar close; :memory: db; day-roll sets prev_day_equity
+src/backtest/run.ts:52 main — arg parsing; requires --sentiment or --sentiment-file; warns on retention-short spans
+src/exchange/nobitex.ts:113 udfHistory — UDF OHLC {s,t,o,h,l,c,v}, public-path throttled
+src/market/priceFeed.ts:5 toUdfSymbol — rls→irt UDF symbol mapping (shared by seed + backtest)
 
 ## Data flow
 1. Sentiment: scripts/feed_sentiment.sh (or external pipeline) → POST :3001/api/v1/sentiment → src/sentiment/server.ts:handle → engine.ingest → sentiment_events table
@@ -103,3 +113,5 @@ src/alerts/report.ts:40 generateReport — writes portfolio_snapshots and prev_d
 - Trade signals are recorded even when trading is disabled (audit); HOLD/blocked decisions also insert signal rows
 - Tests build the full object graph manually with in-memory DB and dry-run portfolio; strategy tests push synthetic close series with backdated timestamps
 - No lint configured; `npm run typecheck` is the only static check; tsconfig excludes tests from build
+- RiskManager/PortfolioManager/SentimentEngine accept an optional `now: () => number` clock (default Date.now); timestamps, day keys, cooldown and halt state all use it — backtester passes a virtual clock that advances per bar
+- Backtester fills at bar close (no spread), uses `:memory:` db (never touches audit.db), needs an explicit sentiment source (constant or file)

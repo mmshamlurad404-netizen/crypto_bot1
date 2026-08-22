@@ -5,11 +5,12 @@ Basis: `.context/gap-analysis.md` priority ranking. Scope = on-prem, Nobitex-onl
 
 ## Phase 1 — Validate & instrument what we already trade (do first)
 
-### P1-1 Backtester
-- New `src/backtest/engine.ts`: replay historical closes through `strategy.hybrid.evaluate` + risk gates without executor; feed synthetic decisions into a paper `PortfolioManager`.
-- New `src/backtest/data.ts`: pull `GET /v2/trades/{symbol}` history (already used by priceFeed seed) into OHLC-ish series; support loading from SQLite `price` snapshots if we start persisting them.
-- New `src/backtest/run.ts` CLI: `npx tsx src/backtest/run.ts --symbol btc/rls --days 90` → prints trades, win rate, profit factor, max drawdown, final equity.
-- Wire: read config via `DOTENV_CONFIG_PATH`; DRY_RUN semantics reused. No live orders ever.
+### P1-1 Backtester — DONE (2026-08-22)
+- `src/backtest/engine.ts`: replays historical bars through the real `HybridStrategy` + risk gates on an injectable clock; paper `PortfolioManager`; fills at bar close; day-roll maintains `prev_day_equity`.
+- `src/backtest/data.ts`: `loadHistory` pages `/market/udf/history` (exchange retains ~500 bars: 60m≈21d, 240m≈83d); `loadSentimentFile` for JSONL.
+- `src/backtest/run.ts` CLI: `--symbol/--days/--resolution/--sentiment/--sentiment-file/--start-equity/--json/--verbose`; warns on retention-short spans; requires a sentiment source.
+- Tests `tests/backtest.test.ts` (6) + clock-injection refactor (RiskManager/PortfolioManager/SentimentEngine accept `now`); 34/34 pass; verified against live BTC-RLS history.
+- Refactors: `toUdfSymbol` exported from priceFeed; `udfHistory` added to NobitexClient.
 
 ### P1-2 Performance analytics + trade history export
 - New `src/report/metrics.ts`: from AuditDb compute win rate, profit factor, avg win/loss, max drawdown (from portfolio_snapshots), Sharpe (daily returns), exposure.
