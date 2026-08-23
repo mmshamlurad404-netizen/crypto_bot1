@@ -56,6 +56,10 @@ function main(): void {
     rsiEntryUpper: config.rsiEntryUpper,
     stopLossPct: config.stopLossPct,
     takeProfitPct: config.takeProfitPct,
+    trailingStopPct: config.trailingStopPct,
+    trailingStopActivatePct: config.trailingStopActivatePct,
+    trailingTpPct: config.trailingTpPct,
+    trailingTpActivatePct: config.trailingTpActivatePct,
   });
   const executor = new Executor(db, client, priceFeed, portfolio, risk, config.dryRun, config.feePct, logger);
   const strategy = new HybridStrategy(db, priceFeed, sentimentEngine, portfolio, risk, {

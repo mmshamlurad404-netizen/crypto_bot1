@@ -24,6 +24,25 @@ export interface RiskConfigShape {
   rsiEntryUpper: number;
   stopLossPct: number;
   takeProfitPct: number;
+  trailingStopPct: number;
+  trailingStopActivatePct: number;
+  trailingTpPct: number;
+  trailingTpActivatePct: number;
+}
+
+export interface TrailingCheck {
+  hit: boolean;
+  reason: string | null;
+  kind: "trailing_stop" | "trailing_tp" | null;
+  stopArmed: boolean;
+  tpArmed: boolean;
+}
+
+interface TrailingState {
+  positionId: number;
+  peak: number;
+  stopArmed: boolean;
+  tpArmed: boolean;
 }
 
 export class RiskManager {
@@ -34,6 +53,7 @@ export class RiskManager {
   private now: () => number;
   private lastTradeAt: Map<string, number> = new Map();
   private tradingHalted: string | null = null;
+  private trailing: Map<string, TrailingState> = new Map();
 
   constructor(db: AuditDb, priceFeed: PriceFeed, portfolio: PortfolioManager, config: RiskConfigShape, now: () => number = Date.now) {
     this.db = db;
@@ -170,6 +190,56 @@ export class RiskManager {
       return { hit: true, reason: `take-profit ${this.config.takeProfitPct}%` };
     }
     return { hit: false, reason: null };
+  }
+
+  checkTrailingStops(pair: SymbolPair, price: number): TrailingCheck {
+    const pos = this.db.getOpenPosition(pair.key);
+    if (!pos) {
+      this.trailing.delete(pair.key);
+      return { hit: false, reason: null, kind: null, stopArmed: false, tpArmed: false };
+    }
+    let st = this.trailing.get(pair.key);
+    if (!st || st.positionId !== pos.id) {
+      st = { positionId: pos.id, peak: pos.entryPrice, stopArmed: false, tpArmed: false };
+      this.trailing.set(pair.key, st);
+    }
+    if (price > st.peak) st.peak = price;
+
+    const trailStopPct = this.config.trailingStopPct;
+    if (!st.stopArmed && trailStopPct > 0 && price >= pos.entryPrice * (1 + this.config.trailingStopActivatePct / 100)) {
+      st.stopArmed = true;
+    }
+    if (st.stopArmed && trailStopPct > 0) {
+      const trailStop = st.peak * (1 - trailStopPct / 100);
+      if (price <= trailStop) {
+        return {
+          hit: true,
+          reason: `trailing stop ${trailStopPct}% (peak ${st.peak})`,
+          kind: "trailing_stop",
+          stopArmed: true,
+          tpArmed: st.tpArmed,
+        };
+      }
+    }
+
+    const trailTpPct = this.config.trailingTpPct;
+    if (!st.tpArmed && trailTpPct > 0 && price >= pos.entryPrice * (1 + this.config.trailingTpActivatePct / 100)) {
+      st.tpArmed = true;
+    }
+    if (st.tpArmed && trailTpPct > 0) {
+      const trailTp = st.peak * (1 - trailTpPct / 100);
+      if (price <= trailTp) {
+        return {
+          hit: true,
+          reason: `trailing take-profit ${trailTpPct}% (peak ${st.peak})`,
+          kind: "trailing_tp",
+          stopArmed: st.stopArmed,
+          tpArmed: true,
+        };
+      }
+    }
+
+    return { hit: false, reason: null, kind: null, stopArmed: st.stopArmed, tpArmed: st.tpArmed };
   }
 
   recordTrade(pair: SymbolPair): void {

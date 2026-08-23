@@ -64,8 +64,12 @@ export class HybridStrategy {
       if (sl.hit) {
         return this.sellSignal(pair, rsi, sentiment, priceNow, sl.reason!);
       }
+      const trail = this.risk.checkTrailingStops(pair, priceNow);
+      if (trail.hit) {
+        return this.sellSignal(pair, rsi, sentiment, priceNow, trail.reason!);
+      }
       const tp = this.risk.checkTakeProfit(pair, priceNow);
-      if (tp.hit) {
+      if (tp.hit && !trail.tpArmed) {
         return this.sellSignal(pair, rsi, sentiment, priceNow, tp.reason!);
       }
       if (sentimentCount > 0 && sentiment <= this.config.sentimentExitThreshold) {

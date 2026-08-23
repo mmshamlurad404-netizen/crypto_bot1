@@ -13,7 +13,7 @@ Updated: 2026-08-22
 │   ├── market/             # Per-symbol price series, poll + trade seeding
 │   ├── portfolio/          # Holdings, equity, PnL, position lifecycle
 │   ├── report/             # Performance analytics from audit DB (P1-2)
-│   ├── risk/               # Limit gates, volatility sizing, daily-loss halt
+│   ├── risk/               # Limit gates, volatility sizing, daily-loss halt, trailing stops
 │   ├── sentiment/          # HTTP webhook + JSONL feed + aggregation engine
 │   ├── strategy/           # Hybrid RSI + sentiment entry/exit rules
 │   ├── index.ts            # Orchestrator: poll loop, execution, scheduling
@@ -46,7 +46,7 @@ src/market/priceFeed.ts — in-memory PricePoint series, seed from recent trades
 src/sentiment/engine.ts — confidence × time-decay weighted sentiment score
 src/sentiment/server.ts — HTTP server: /healthz, POST /api/v1/sentiment, JSONL file poller
 src/strategy/hybrid.ts — evaluate(): warmup gate, exits, then sentiment+RSI entry with risk veto
-src/risk/manager.ts — evaluateBuy gate chain, volatility sizing, stop-loss/take-profit, halt state
+src/risk/manager.ts — evaluateBuy gate chain, volatility sizing, stop-loss/take-profit, trailing stops, halt state
 src/portfolio/manager.ts — dry-run virtual holdings vs live wallets; applyTrade PnL accounting
 src/execution/executor.ts — fills at best bid/ask, dry-run simulation or live addOrder, fee calc
 src/alerts/telegram.ts — sendMessage with HTML, logs every alert to DB
@@ -88,6 +88,7 @@ src/strategy/hybrid.ts:41 evaluate — decision tree: warmup → SL/TP → senti
 src/risk/manager.ts:83 evaluateBuy — sequential gates: halted, open position, cooldown, volatility, min value, exposure, position size, daily loss, trade count, RSI
 src/risk/manager.ts:44 sizeByVolatility — scales size by benchmark/volatility ratio, capped
 src/risk/manager.ts:154 checkStopLoss — stop at entryPrice × (1 − stopLossPct/100)
+src/risk/manager.ts:170 checkTrailingStops — per-position peak + armed flags; stop arms at ACTIVATE% above entry, TP arms too; armed TP supersedes fixed TP in strategy; state keyed by positionId, resets on close/change
 src/portfolio/manager.ts:134 applyTrade — updates holdings, merges/re-opens positions, stores daily realized PnL meta
 src/execution/executor.ts:67 execute — best bid/ask fill price, live addOrder w/ clientOrderId, fee = total × feePct
 src/alerts/report.ts:40 generateReport — writes portfolio_snapshots and prev_day_equity meta
@@ -126,3 +127,5 @@ src/db.ts:290 snapshotsBetween — equity/positions_value series by ts range (dr
 - Backtester fills at bar close (no spread), uses `:memory:` db (never touches audit.db), needs an explicit sentiment source (constant or file)
 - DailyReporter includes a "Performance (last 30d)" section from report/metrics.ts; metrics need `portfolio_snapshots` for drawdown/Sharpe/exposure, closed positions for win-rate/profit-factor
 - CSV export formats large rial values as integers (FP-noise epsilon 1e-4); amounts keep up to 8 decimals
+- Trailing stop/TP default OFF (0); trailing state is in-memory (Map keyed by positionId), resets on restart — same caveat as risk halt state
+- Strategy exit order: fixed stop-loss (floor) → trailing stop/TP → fixed take-profit (skipped while trailing TP armed); keep TRAILING_TP_ACTIVATE_PCT <= TAKE_PROFIT_PCT for trailing TP to take effect

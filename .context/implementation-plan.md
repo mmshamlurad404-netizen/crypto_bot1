@@ -19,11 +19,11 @@ Basis: `.context/gap-analysis.md` priority ranking. Scope = on-prem, Nobitex-onl
 - DB: `closedPositionsBetween`, `snapshotsBetween` + indexes on positions(close_ts) and portfolio_snapshots(ts).
 - Tests `tests/metrics.test.ts` (5); full suite 39/39; smoke-tested CSV export on a seeded DB.
 
-### P1-3 Trailing stop-loss / trailing take-profit
-- `src/risk/manager.ts`: track `trailingStopPct` and optional `trailingTpPct` per position; on each tick update activation price if unrealized PnL exceeds activation threshold (e.g., +X% from entry), then ratchet.
-- Config: `TRAILING_STOP_PCT`, `TRAILING_STOP_ACTIVATE_PCT`, `TRAILING_TP_PCT`, `TRAILING_TP_ACTIVATE_PCT` in `.env.example` + config.ts schema.
-- Replace/augment `checkStopLoss` with `checkTrailingStops`; keep fixed SL as floor.
-- Tests: `tests/risk.test.ts` trailing ratchet scenarios (activation, pullback, never-activated).
+### P1-3 Trailing stop-loss / trailing take-profit — DONE (2026-08-23)
+- `src/risk/manager.ts`: `checkTrailingStops` keeps per-position peak + armed flags; stop arms at `TRAILING_STOP_ACTIVATE_PCT` above entry, TP arms at `TRAILING_TP_ACTIVATE_PCT`; armed TP supersedes the fixed take-profit in `HybridStrategy` so winners run; state resets on position change/close.
+- Config: `TRAILING_STOP_PCT`, `TRAILING_STOP_ACTIVATE_PCT`, `TRAILING_TP_PCT`, `TRAILING_TP_ACTIVATE_PCT` added to config.ts schema (Zod, defaults safe: stops/TP 0 = disabled) + `.env.example`; wired into `index.ts` and backtest engine.
+- Strategy `src/strategy/hybrid.ts`: trailing checks run between stop-loss and fixed take-profit; fixed TP skipped while trailing TP armed.
+- Tests `tests/risk.test.ts`: 5 trailing scenarios (no-hit before activation, arm+ratchet, TP pullback exit, supersede fixed TP, state reset on close/re-entry); suite 44/44, typecheck + build clean.
 
 ### P1-4 DCA (averaging down)
 - New `src/strategy/dca.ts` + config `DCA_LEVELS` (JSON array of `{belowPct, buyPct}`), `DCA_MAX_ORDERS_PER_POSITION`, `DCA_ENABLED`.

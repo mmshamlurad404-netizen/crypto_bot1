@@ -33,6 +33,10 @@ function setup(overrides: Partial<Record<string, number>> = {}) {
     rsiEntryUpper: 35,
     stopLossPct: 3,
     takeProfitPct: 6,
+    trailingStopPct: 0,
+    trailingStopActivatePct: 1.5,
+    trailingTpPct: 0,
+    trailingTpActivatePct: 2,
     ...overrides,
   };
   const risk = new RiskManager(db, feed, portfolio, config);
@@ -112,4 +116,63 @@ test("open position blocks re-entry", () => {
   const verdict = risk.evaluateBuy(symbols[0]!, 5_000_000, 0.01, 30);
   assert.equal(verdict.allowed, false);
   assert.match(verdict.reason!, /already open/i);
+});
+
+test("trailing stop does not trigger before activation", () => {
+  const { db, risk } = setup({ trailingStopPct: 2, trailingStopActivatePct: 1.5 });
+  db.insertPosition({ symbol: "btc/rls", openTs: new Date().toISOString(), entryPrice: 100, amount: 100, orderId: null });
+  assert.equal(risk.checkTrailingStops(symbols[0]!, 101).hit, false);
+  const before = risk.checkTrailingStops(symbols[0]!, 101);
+  assert.equal(before.stopArmed, false);
+  const backDown = risk.checkTrailingStops(symbols[0]!, 96);
+  assert.equal(backDown.hit, false, "not armed, so no trailing stop even below entry");
+});
+
+test("trailing stop arms above activation and ratchets with peak", () => {
+  const { db, risk } = setup({ trailingStopPct: 2, trailingStopActivatePct: 1.5 });
+  db.insertPosition({ symbol: "btc/rls", openTs: new Date().toISOString(), entryPrice: 100, amount: 100, orderId: null });
+  const armed = risk.checkTrailingStops(symbols[0]!, 101.5);
+  assert.equal(armed.stopArmed, true);
+  risk.checkTrailingStops(symbols[0]!, 104);
+  const hit = risk.checkTrailingStops(symbols[0]!, 101.9);
+  assert.equal(hit.hit, true);
+  assert.equal(hit.kind, "trailing_stop");
+  assert.equal(hit.stopArmed, true);
+});
+
+test("trailing take-profit arms above activation and exits on pullback", () => {
+  const { db, risk } = setup({ trailingTpPct: 2, trailingTpActivatePct: 2 });
+  db.insertPosition({ symbol: "btc/rls", openTs: new Date().toISOString(), entryPrice: 100, amount: 100, orderId: null });
+  const armed = risk.checkTrailingStops(symbols[0]!, 102);
+  assert.equal(armed.tpArmed, true);
+  risk.checkTrailingStops(symbols[0]!, 110);
+  const hit = risk.checkTrailingStops(symbols[0]!, 107.5);
+  assert.equal(hit.hit, true);
+  assert.equal(hit.kind, "trailing_tp");
+  assert.equal(hit.tpArmed, true);
+});
+
+test("trailing take-profit supersedes fixed take-profit once armed", () => {
+  const { db, risk } = setup({ trailingTpPct: 2, trailingTpActivatePct: 2 });
+  db.insertPosition({ symbol: "btc/rls", openTs: new Date().toISOString(), entryPrice: 100, amount: 100, orderId: null });
+  risk.checkTrailingStops(symbols[0]!, 102);
+  const aboveFixedTp = risk.checkTrailingStops(symbols[0]!, 106.5);
+  assert.equal(aboveFixedTp.hit, false, "no trailing hit yet");
+  assert.equal(aboveFixedTp.tpArmed, true, "strategy will skip fixed take-profit");
+  assert.equal(risk.checkTakeProfit(symbols[0]!, 106.5).hit, true);
+});
+
+test("trailing state resets when position closes and on re-entry", () => {
+  const { db, risk } = setup({ trailingStopPct: 2, trailingStopActivatePct: 1.5 });
+  db.insertPosition({ symbol: "btc/rls", openTs: new Date().toISOString(), entryPrice: 100, amount: 100, orderId: null });
+  const armed = risk.checkTrailingStops(symbols[0]!, 101.5);
+  assert.equal(armed.stopArmed, true);
+  const pos = db.getOpenPosition("btc/rls")!;
+  db.closePosition(pos.id, new Date().toISOString(), 101.5, 0, "test");
+  const cleared = risk.checkTrailingStops(symbols[0]!, 101.5);
+  assert.equal(cleared.stopArmed, false);
+  assert.equal(cleared.hit, false);
+  db.insertPosition({ symbol: "btc/rls", openTs: new Date().toISOString(), entryPrice: 90, amount: 100, orderId: null });
+  const reentry = risk.checkTrailingStops(symbols[0]!, 90.5);
+  assert.equal(reentry.stopArmed, false, "new position starts fresh, no carry-over peak");
 });

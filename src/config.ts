@@ -42,6 +42,10 @@ const envSchema = z.object({
   VOLATILITY_SIZE_CAP: z.coerce.number().min(1).default(2),
   STOP_LOSS_PCT: z.coerce.number().min(0).default(3),
   TAKE_PROFIT_PCT: z.coerce.number().min(0).default(6),
+  TRAILING_STOP_PCT: z.coerce.number().min(0).max(50).default(0),
+  TRAILING_STOP_ACTIVATE_PCT: z.coerce.number().min(0).max(100).default(1.5),
+  TRAILING_TP_PCT: z.coerce.number().min(0).max(50).default(0),
+  TRAILING_TP_ACTIVATE_PCT: z.coerce.number().min(0).max(100).default(2),
   COOLDOWN_MINUTES: z.coerce.number().int().min(0).default(30),
   FEE_PCT: z.coerce.number().min(0).max(10).default(0.25),
 
@@ -86,6 +90,10 @@ export interface BotConfig {
   volatilitySizeCap: number;
   stopLossPct: number;
   takeProfitPct: number;
+  trailingStopPct: number;
+  trailingStopActivatePct: number;
+  trailingTpPct: number;
+  trailingTpActivatePct: number;
   cooldownMinutes: number;
   feePct: number;
   telegramBotToken: string;
@@ -157,6 +165,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     volatilitySizeCap: parsed.VOLATILITY_SIZE_CAP,
     stopLossPct: parsed.STOP_LOSS_PCT,
     takeProfitPct: parsed.TAKE_PROFIT_PCT,
+    trailingStopPct: parsed.TRAILING_STOP_PCT,
+    trailingStopActivatePct: parsed.TRAILING_STOP_ACTIVATE_PCT,
+    trailingTpPct: parsed.TRAILING_TP_PCT,
+    trailingTpActivatePct: parsed.TRAILING_TP_ACTIVATE_PCT,
     cooldownMinutes: parsed.COOLDOWN_MINUTES,
     feePct: parsed.FEE_PCT,
     telegramBotToken: parsed.TELEGRAM_BOT_TOKEN.trim(),

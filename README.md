@@ -103,9 +103,13 @@ Accepts a single object or an array. `sentiment` is clamped to `[-1, 1]`,
 **Exit (SELL)** when any holds:
 
 1. Stop-loss: price <= entry × `(1 - STOP_LOSS_PCT/100)`
-2. Take-profit: price >= entry × `(1 + TAKE_PROFIT_PCT/100)`
-3. Sentiment <= `SENTIMENT_EXIT_THRESHOLD`
-4. `RSI >= RSI_OVERBOUGHT`
+2. Trailing stop (if `TRAILING_STOP_PCT` > 0): once price >= entry × `(1 + TRAILING_STOP_ACTIVATE_PCT/100)` the stop ratchets up with the peak and exits on a `TRAILING_STOP_PCT` pullback
+3. Take-profit: price >= entry × `(1 + TAKE_PROFIT_PCT/100)` — superseded by the trailing take-profit once armed
+4. Trailing take-profit (if `TRAILING_TP_PCT` > 0): once price >= entry × `(1 + TRAILING_TP_ACTIVATE_PCT/100)` it exits `TRAILING_TP_PCT` below the peak, letting winners run
+5. Sentiment <= `SENTIMENT_EXIT_THRESHOLD`
+6. `RSI >= RSI_OVERBOUGHT`
+
+Keep `TRAILING_TP_ACTIVATE_PCT` <= `TAKE_PROFIT_PCT` so the trailing take-profit engages before the fixed one exits.
 
 Sentiment is aggregated as a weighted mean over a sliding window; weights are
 `confidence × exp(-age/half_life)`, so recent high-confidence signals dominate.

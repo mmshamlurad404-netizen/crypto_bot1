@@ -1,17 +1,18 @@
-# State — 2026-08-22
+# State — 2026-08-23
 
-## Intent    — implement P1-2 Performance analytics + CSV export (Cryptohopper parity, Phase 1) and keep `.context/` updated at each step
-## Touched   — src/report/metrics.ts — created: computeMetrics (win rate, profit factor, net PnL, drawdown, Sharpe, exposure, return) over a range — done
-## Touched   — src/export/trades.ts — created: CSV export CLI (--kind trades|positions, --from/--to), EPIPE-safe — done
-## Touched   — src/alerts/report.ts — DailyReporter now emits a "Performance (last 30d)" section — done
-## Touched   — src/db.ts — added closedPositionsBetween + snapshotsBetween + indexes (positions.close_ts, portfolio_snapshots.ts) — done
-## Touched   — tests/metrics.test.ts — created: 5 tests (win-rate/PF, drawdown/Sharpe/exposure, fills, empty, ranges) — done
-## Touched   — README.md — Performance metrics & CSV export section + architecture tree — done
-## Touched   — .context/implementation-plan.md — P1-2 marked DONE — done
-## Touched   — .context/map.md — added export/, report/, new db methods, metrics/export gotchas — done
-## Decisions — metrics default to last 30 days; drawdown/Sharpe/exposure require portfolio_snapshots; win-rate/PF require closed positions
-## Decisions — Sharpe uses day-gap returns from snapshots (≈1/day at report time); annualized ×√365; null when <2 snapshots or zero std
-## Decisions — CSV uses integer formatting for large rial values (FP epsilon 1e-4) and up-to-8-decimals for crypto amounts
-## Verified  — 39/39 tests pass (34 + 5 new); typecheck + build clean; CSV export smoke-tested on a seeded DB (trades, positions, date ranges)
-## Open      — metrics are mark-to-market at snapshot time only (once/day); intraday drawdown is not captured
-## Next      — commit + push P1-2; then P1-3 trailing stop-loss / take-profit (or user's choice)
+## Intent    — implement P1-3 trailing stop-loss / trailing take-profit (Cryptohopper parity, Phase 1) and keep `.context/` updated at each step
+## Touched   — src/config.ts — added TRAILING_STOP_PCT / TRAILING_STOP_ACTIVATE_PCT / TRAILING_TP_PCT / TRAILING_TP_ACTIVATE_PCT (Zod, trailing stop/TP default 0 = disabled) — done
+## Touched   — src/risk/manager.ts — added RiskConfigShape fields, TrailingState map (positionId/peak/stopArmed/tpArmed), TrailingCheck result, checkTrailingStops — done
+## Touched   — src/strategy/hybrid.ts — trailing checks run after stop-loss, before fixed TP; fixed TP skipped while trailing TP armed — done
+## Touched   — src/index.ts — RiskManager wiring of the 4 new config fields — done
+## Touched   — src/backtest/engine.ts — RiskConfigShape literal extended with the 4 fields — done
+## Touched   — .env.example — documented trailing section (activation, ratchet, supersede note) — done
+## Touched   — tests/risk.test.ts — config literal extended + 5 trailing tests (no-hit before activation, arm+ratchet, TP pullback, supersede fixed TP, reset on close/re-entry) — done
+## Touched   — .context/implementation-plan.md — P1-3 marked DONE — done
+## Decisions — trailing stop/TP default to 0 (off); when off, existing fixed SL/TP behavior is unchanged
+## Decisions — armed trailing TP supersedes fixed TP in HybridStrategy; keep TRAILING_TP_ACTIVATE_PCT <= TAKE_PROFIT_PCT for it to take effect
+## Decisions — fixed stop-loss stays as the unconditional floor; trailing stop only triggers once armed above entry
+## Decisions — trailing state is in-memory keyed by positionId; resets on close or when the open position changes
+## Verified  — 44/44 tests pass (39 + 5 new); typecheck + build clean
+## Open      — trailing behavior only validated in unit tests so far; backtest replay with trailing on a real history pull would be a good sanity check (optional)
+## Next      — commit + push P1-3; then P1-4 DCA (averaging down) or user's choice

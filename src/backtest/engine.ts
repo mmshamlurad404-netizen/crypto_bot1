@@ -96,6 +96,10 @@ export function runBacktest(args: RunBacktestArgs): BacktestResult {
       rsiEntryUpper: config.rsiEntryUpper,
       stopLossPct: config.stopLossPct,
       takeProfitPct: config.takeProfitPct,
+      trailingStopPct: config.trailingStopPct,
+      trailingStopActivatePct: config.trailingStopActivatePct,
+      trailingTpPct: config.trailingTpPct,
+      trailingTpActivatePct: config.trailingTpActivatePct,
     },
     now
   );
