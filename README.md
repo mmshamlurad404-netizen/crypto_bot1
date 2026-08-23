@@ -33,6 +33,8 @@ src/
   execution/executor.ts # order placement (dry-run simulation / live)
   alerts/telegram.ts    # Telegram notifier
   alerts/report.ts      # daily report + portfolio snapshot
+  report/metrics.ts     # performance analytics from the audit DB
+  export/trades.ts      # CSV export CLI (trades / closed positions)
   backtest/             # history loader + strategy replay engine + CLI
 ```
 
@@ -190,10 +192,27 @@ Notes:
 - The backtest uses an in-memory database only — it never touches `data/audit.db`
   and never places orders.
 
+## Performance metrics & CSV export
+
+`report/metrics.ts` derives performance analytics from the audit DB over a
+range (default last 30 days): win rate, profit factor, net PnL, avg win/loss,
+return, max drawdown and Sharpe from `portfolio_snapshots`, and average
+exposure. The daily report now includes a "Performance (last 30d)" section.
+
+```bash
+# export fills as CSV
+npx tsx src/export/trades.ts > trades.csv
+
+# export closed positions (with realized PnL) for a date range
+npx tsx src/export/trades.ts --kind positions --from 2026-07-01 --to 2026-07-31
+
+# range filters apply to fills too; dates are UTC
+```
+
 ## Tests
 
 ```bash
-npm test              # indicators, sentiment, risk, strategy, backtest
+npm test              # indicators, sentiment, risk, strategy, backtest, metrics
 npm run typecheck     # tsc --noEmit
 npm run build         # compile to dist/
 ```

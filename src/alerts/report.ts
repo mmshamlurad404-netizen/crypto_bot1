@@ -4,6 +4,7 @@ import { PriceFeed } from "../market/priceFeed.js";
 import { SentimentEngine } from "../sentiment/engine.js";
 import { TelegramNotifier } from "./telegram.js";
 import { SymbolPair } from "../types.js";
+import { computeMetrics } from "../report/metrics.js";
 import { pino, type Logger } from "pino";
 
 export class DailyReporter {
@@ -77,6 +78,16 @@ export class DailyReporter {
         lines.push(`${t.symbol.toUpperCase()} ${t.side.toUpperCase()} ${t.amount} @ ${t.price.toLocaleString()}`);
       }
     }
+
+    lines.push("");
+    lines.push("<b>Performance (last 30d)</b>");
+    const perf = computeMetrics(this.db);
+    lines.push(`Return: ${perf.returnPct !== null ? (perf.returnPct >= 0 ? "+" : "") + perf.returnPct.toFixed(2) + "%" : "n/a"} (${perf.startEquity !== null ? perf.startEquity.toLocaleString() : "n/a"} -> ${perf.endEquity !== null ? perf.endEquity.toLocaleString() : "n/a"})`);
+    lines.push(`Round trips: ${perf.roundTrips} (${perf.wins}W / ${perf.losses}L, win rate ${perf.winRatePct.toFixed(1)}%)`);
+    lines.push(`Profit factor: ${perf.profitFactor === null ? "n/a" : perf.profitFactor === Infinity ? "inf" : perf.profitFactor.toFixed(2)}`);
+    lines.push(`Net PnL: ${perf.netPnl >= 0 ? "+" : ""}${perf.netPnl.toLocaleString()}`);
+    lines.push(`Max drawdown: ${perf.maxDrawdownPct !== null ? "-" + perf.maxDrawdownPct.toFixed(2) + "%" : "n/a"} | Sharpe: ${perf.sharpe !== null ? perf.sharpe.toFixed(2) : "n/a"}`);
+    lines.push(`Fills (30d): ${perf.trades}`);
 
     lines.push("");
     lines.push("<b>Market snapshot</b>");

@@ -135,8 +135,10 @@ export class AuditDb {
       CREATE INDEX IF NOT EXISTS idx_orders_ts ON orders(ts);
       CREATE INDEX IF NOT EXISTS idx_trades_ts ON trades(ts);
       CREATE INDEX IF NOT EXISTS idx_positions_symbol ON positions(symbol);
+      CREATE INDEX IF NOT EXISTS idx_positions_close_ts ON positions(close_ts);
       CREATE INDEX IF NOT EXISTS idx_risk_ts ON risk_events(ts);
       CREATE INDEX IF NOT EXISTS idx_sentiment_ts ON sentiment_events(ts);
+      CREATE INDEX IF NOT EXISTS idx_snapshots_ts ON portfolio_snapshots(ts);
     `);
   }
 
@@ -229,6 +231,14 @@ export class AuditDb {
     return row ? mapPosition(row) : null;
   }
 
+  closedPositionsBetween(fromTs: string, toTs: string): Position[] {
+    return (
+      this.db
+        .prepare("SELECT * FROM positions WHERE status = 'closed' AND close_ts >= ? AND close_ts < ? ORDER BY close_ts ASC")
+        .all(fromTs, toTs) as Record<string, unknown>[]
+    ).map(mapPosition);
+  }
+
   updatePositionAmount(id: number, amount: number, entryPrice: number): void {
     this.db.prepare("UPDATE positions SET amount = ?, entry_price = ? WHERE id = ?").run(amount, entryPrice, id);
   }
@@ -278,6 +288,12 @@ export class AuditDb {
   latestSnapshot(): { equity: number; ts: string } | null {
     const row = this.db.prepare("SELECT equity, ts FROM portfolio_snapshots ORDER BY ts DESC LIMIT 1").get() as { equity: number; ts: string } | undefined;
     return row ?? null;
+  }
+
+  snapshotsBetween(fromTs: string, toTs: string): { ts: string; equity: number; positionsValue: number }[] {
+    return this.db
+      .prepare("SELECT ts, equity, positions_value AS positionsValue FROM portfolio_snapshots WHERE ts >= ? AND ts < ? ORDER BY ts ASC")
+      .all(fromTs, toTs) as { ts: string; equity: number; positionsValue: number }[];
   }
 
   insertAlert(alert: { ts: string; type: string; channel: string; message: string }): number {

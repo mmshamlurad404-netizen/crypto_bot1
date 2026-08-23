@@ -7,10 +7,12 @@ Updated: 2026-08-22
 ├── src/                    # TypeScript source (ESM, NodeNext)
 │   ├── alerts/             # Telegram notifier + daily HTML report
 │   ├── backtest/           # History replay engine + CLI (P1-1)
+│   ├── export/             # CSV export CLI (trades / closed positions) (P1-2)
 │   ├── exchange/           # Nobitex REST client (apiv2.nobitex.ir)
 │   ├── execution/          # Order placement: live vs simulated fills
 │   ├── market/             # Per-symbol price series, poll + trade seeding
 │   ├── portfolio/          # Holdings, equity, PnL, position lifecycle
+│   ├── report/             # Performance analytics from audit DB (P1-2)
 │   ├── risk/               # Limit gates, volatility sizing, daily-loss halt
 │   ├── sentiment/          # HTTP webhook + JSONL feed + aggregation engine
 │   ├── strategy/           # Hybrid RSI + sentiment entry/exit rules
@@ -52,9 +54,12 @@ src/alerts/report.ts — DailyReporter: snapshot, HTML report, prev-day equity m
 src/backtest/data.ts — loadHistory: paged /market/udf/history fetch (exchange keeps ~500 bars) + loadSentimentFile
 src/backtest/engine.ts — runBacktest: replays real strategy/risk/portfolio over bars on an injectable clock
 src/backtest/run.ts — CLI: --symbol/--days/--resolution/--sentiment/--sentiment-file/--json/--verbose
+src/report/metrics.ts — computeMetrics: win rate, profit factor, drawdown, Sharpe, exposure from audit DB
+src/export/trades.ts — CSV export CLI: --kind trades|positions, --from/--to (UTC dates); EPIPE-safe stdout
 scripts/feed_sentiment.sh — sample curl POST of sentiment batch to webhook
 tests/indicators.test.ts — RSI/volatility edge cases
 tests/backtest.test.ts — backtest replay (win/loss/flat) + UDF mapping
+tests/metrics.test.ts — analytics over synthetic positions/snapshots/trades
 tests/risk.test.ts — risk gate order and halt behavior
 tests/strategy.test.ts — hybrid strategy buy/hold/sell paths
 tests/sentiment.test.ts — sentiment aggregation behavior
@@ -91,6 +96,10 @@ src/backtest/engine.ts:31 runBacktest — builds strategy/risk/portfolio with `n
 src/backtest/run.ts:52 main — arg parsing; requires --sentiment or --sentiment-file; warns on retention-short spans
 src/exchange/nobitex.ts:113 udfHistory — UDF OHLC {s,t,o,h,l,c,v}, public-path throttled
 src/market/priceFeed.ts:5 toUdfSymbol — rls→irt UDF symbol mapping (shared by seed + backtest)
+src/report/metrics.ts:55 computeMetrics — range-filtered (default 30d) performance metrics from closed positions + snapshots
+src/export/trades.ts:62 main — CSV export to stdout; handles EPIPE for `| head`; --kind positions uses closedPositionsBetween
+src/db.ts:255 closedPositionsBetween — closed positions by close_ts range (for metrics/export)
+src/db.ts:290 snapshotsBetween — equity/positions_value series by ts range (drawdown/Sharpe/exposure)
 
 ## Data flow
 1. Sentiment: scripts/feed_sentiment.sh (or external pipeline) → POST :3001/api/v1/sentiment → src/sentiment/server.ts:handle → engine.ingest → sentiment_events table
@@ -115,3 +124,5 @@ src/market/priceFeed.ts:5 toUdfSymbol — rls→irt UDF symbol mapping (shared b
 - No lint configured; `npm run typecheck` is the only static check; tsconfig excludes tests from build
 - RiskManager/PortfolioManager/SentimentEngine accept an optional `now: () => number` clock (default Date.now); timestamps, day keys, cooldown and halt state all use it — backtester passes a virtual clock that advances per bar
 - Backtester fills at bar close (no spread), uses `:memory:` db (never touches audit.db), needs an explicit sentiment source (constant or file)
+- DailyReporter includes a "Performance (last 30d)" section from report/metrics.ts; metrics need `portfolio_snapshots` for drawdown/Sharpe/exposure, closed positions for win-rate/profit-factor
+- CSV export formats large rial values as integers (FP-noise epsilon 1e-4); amounts keep up to 8 decimals

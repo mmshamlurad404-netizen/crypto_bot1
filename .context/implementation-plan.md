@@ -12,10 +12,12 @@ Basis: `.context/gap-analysis.md` priority ranking. Scope = on-prem, Nobitex-onl
 - Tests `tests/backtest.test.ts` (6) + clock-injection refactor (RiskManager/PortfolioManager/SentimentEngine accept `now`); 34/34 pass; verified against live BTC-RLS history.
 - Refactors: `toUdfSymbol` exported from priceFeed; `udfHistory` added to NobitexClient.
 
-### P1-2 Performance analytics + trade history export
-- New `src/report/metrics.ts`: from AuditDb compute win rate, profit factor, avg win/loss, max drawdown (from portfolio_snapshots), Sharpe (daily returns), exposure.
-- Extend `DailyReporter` to include metrics section; add `src/export/trades.ts` CSV export (`npx tsx src/export/trades.ts > trades.csv`).
-- Tests: `tests/metrics.test.ts` on synthetic audit rows.
+### P1-2 Performance analytics + trade history export — DONE (2026-08-22)
+- `src/report/metrics.ts`: `computeMetrics` from AuditDb (range-filtered, default 30d) — win rate, profit factor, net PnL, avg win/loss (abs + % of start equity), return, max drawdown, Sharpe, avg exposure.
+- `src/export/trades.ts` CLI: `--kind trades|positions`, `--from/--to` (UTC dates), CSV to stdout, EPIPE-safe; cleaned rial number formatting.
+- `DailyReporter` now emits a "Performance (last 30d)" section.
+- DB: `closedPositionsBetween`, `snapshotsBetween` + indexes on positions(close_ts) and portfolio_snapshots(ts).
+- Tests `tests/metrics.test.ts` (5); full suite 39/39; smoke-tested CSV export on a seeded DB.
 
 ### P1-3 Trailing stop-loss / trailing take-profit
 - `src/risk/manager.ts`: track `trailingStopPct` and optional `trailingTpPct` per position; on each tick update activation price if unrealized PnL exceeds activation threshold (e.g., +X% from entry), then ratchet.

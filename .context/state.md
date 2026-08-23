@@ -1,22 +1,17 @@
 # State — 2026-08-22
 
-## Intent    — implement P1-1 Backtester (Cryptohopper parity, Phase 1) and keep `.context/` updated at each step
-## Touched   — src/backtest/data.ts — created: UDF history loader (paged) + JSONL sentiment loader — done
-## Touched   — src/backtest/engine.ts — created: runBacktest replays strategy+risk on injectable clock, paper portfolio — done
-## Touched   — src/backtest/run.ts — created: CLI (symbol/days/resolution/sentiment/sentiment-file/json/verbose/help) — done
-## Touched   — tests/backtest.test.ts — created: 6 tests (win/loss/flat/UDF mapping/symbol map) — done
-## Touched   — src/exchange/nobitex.ts — added udfHistory() (UDF OHLC, public-throttled) — done
-## Touched   — src/market/priceFeed.ts — exported toUdfSymbol() (rls→irt), seed uses it — done
-## Touched   — src/risk/manager.ts — injectable `now` clock (cooldown/halt/day-key/timestamps) — done
-## Touched   — src/portfolio/manager.ts — injectable `now` clock (applyTrade timestamps/day-key) — done
-## Touched   — src/sentiment/engine.ts — injectable `now` clock (snapshot/ingest) — done
-## Touched   — README.md — added Backtesting section + backtest/ in architecture — done
-## Touched   — .context/implementation-plan.md — P1-1 marked DONE with implementation notes — done
-## Touched   — .context/map.md — added backtest module, udfHistory/toUdfSymbol, clock-injection + retention gotchas — done
-## Decisions — clock injection (optional `now()` param, default Date.now) over a separate backtest strategy copy: replay the same code, no logic drift
-## Decisions — backtest uses `:memory:` db only; fills at bar close (no spread); requires explicit sentiment source (constant or file)
-## Decisions — exchange retention ~500 UDF bars: document resolution↔span tradeoff (60m≈21d, 240m≈83d) rather than fabricate data
-## Verified  — UDF history endpoint returns {s,t,o,h,l,c,v}; 500-bar cap; valid resolutions ≤240; daily/weekly unsupported
-## Verified  — 34/34 tests pass; typecheck + build clean; CLI smoke-tested on live BTC-RLS (90d/60m and 90d/240m)
-## Open      — whether the constant-sentiment default (0.5 in examples) biases results; user may prefer sentiment-file for realism
-## Next      — commit + push backtester; then P1-2 performance analytics + CSV export (or user's choice)
+## Intent    — implement P1-2 Performance analytics + CSV export (Cryptohopper parity, Phase 1) and keep `.context/` updated at each step
+## Touched   — src/report/metrics.ts — created: computeMetrics (win rate, profit factor, net PnL, drawdown, Sharpe, exposure, return) over a range — done
+## Touched   — src/export/trades.ts — created: CSV export CLI (--kind trades|positions, --from/--to), EPIPE-safe — done
+## Touched   — src/alerts/report.ts — DailyReporter now emits a "Performance (last 30d)" section — done
+## Touched   — src/db.ts — added closedPositionsBetween + snapshotsBetween + indexes (positions.close_ts, portfolio_snapshots.ts) — done
+## Touched   — tests/metrics.test.ts — created: 5 tests (win-rate/PF, drawdown/Sharpe/exposure, fills, empty, ranges) — done
+## Touched   — README.md — Performance metrics & CSV export section + architecture tree — done
+## Touched   — .context/implementation-plan.md — P1-2 marked DONE — done
+## Touched   — .context/map.md — added export/, report/, new db methods, metrics/export gotchas — done
+## Decisions — metrics default to last 30 days; drawdown/Sharpe/exposure require portfolio_snapshots; win-rate/PF require closed positions
+## Decisions — Sharpe uses day-gap returns from snapshots (≈1/day at report time); annualized ×√365; null when <2 snapshots or zero std
+## Decisions — CSV uses integer formatting for large rial values (FP epsilon 1e-4) and up-to-8-decimals for crypto amounts
+## Verified  — 39/39 tests pass (34 + 5 new); typecheck + build clean; CSV export smoke-tested on a seeded DB (trades, positions, date ranges)
+## Open      — metrics are mark-to-market at snapshot time only (once/day); intraday drawdown is not captured
+## Next      — commit + push P1-2; then P1-3 trailing stop-loss / take-profit (or user's choice)
