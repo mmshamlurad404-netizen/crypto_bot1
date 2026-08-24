@@ -13,6 +13,6 @@
 ## Decisions — armed trailing TP supersedes fixed TP in HybridStrategy; keep TRAILING_TP_ACTIVATE_PCT <= TAKE_PROFIT_PCT for it to take effect
 ## Decisions — fixed stop-loss stays as the unconditional floor; trailing stop only triggers once armed above entry
 ## Decisions — trailing state is in-memory keyed by positionId; resets on close or when the open position changes
-## Verified  — 44/44 tests pass (39 + 5 new); typecheck + build clean
+## Verified  — 44/44 tests pass (39 + 5 new); typecheck + build clean; committed d3ea5e8 + pushed to origin/master
 ## Open      — trailing behavior only validated in unit tests so far; backtest replay with trailing on a real history pull would be a good sanity check (optional)
-## Next      — commit + push P1-3; then P1-4 DCA (averaging down) or user's choice
+## Next      — P1-4 DCA (averaging down) or user's choice
