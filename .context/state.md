@@ -12,6 +12,6 @@
 ## Decisions — first version ships notify + halt only; buy/sell/volume-spike conditions deliberately deferred
 ## Decisions — trigger inputs computed per symbol in tick (rsi/price/sentiment); engine stays decoupled via TriggerInput
 ## Decisions — halt uses the same tradingHalted gate as the daily-loss halt; trigger halt persists until process restart
-## Verified  — 65/65 tests pass (54 + 11 new); typecheck + build clean; committed 5b6178a (P1-4) previously
+## Verified  — 65/65 tests pass (54 + 11 new); typecheck + build clean; committed 96571a7 (P1-5) + pushed; all of Phase 1 (P1-1..P1-5) now shipped
 ## Open      — halt from a trigger is process-lifetime only (no persisted halt); buy/sell trigger actions deferred to a later iteration
-## Next      — commit + push P1-5; then Phase 2 (strategy DSL/config pools) or user's choice
+## Next      — Phase 2: P2-1 Strategy DSL + config pools + MA indicators, or user's choice
