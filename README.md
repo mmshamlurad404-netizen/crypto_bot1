@@ -139,6 +139,30 @@ DCA fills are recorded with `kind='dca'` in the `orders` table and the averaged
 entry price is written back to the position, so a recovery to the new average
 roughly breaks even. DCA is disabled by default.
 
+## Trigger rules
+
+`TRIGGERS` is a JSON array of declarative rules evaluated every tick **before**
+the strategy. Each rule has an `id`, a `symbol`, a `when` condition and a
+`then` action. A rule fires once when its condition flips from false to true
+(edge triggered), so it won't spam every tick while the condition stays true.
+
+| Condition type | Meaning | Action type | Meaning |
+|---|---|---|---|
+| `rsi_below` / `rsi_above` | RSI threshold | `notify` | Telegram alert (falls back to the alerts log when unconfigured) |
+| `price_below` / `price_above` | Last price vs value in quote currency | `halt` | Halts trading for the day |
+| `sentiment_below` / `sentiment_above` | Aggregate sentiment threshold | | |
+
+Example:
+
+```json
+[
+  {"id":"btc-dip","symbol":"btc/rls","when":{"type":"rsi_below","value":25},"then":{"type":"notify","message":"BTC oversold!"}},
+  {"id":"circuit-breaker","symbol":"eth/rls","when":{"type":"price_below","value":200000},"then":{"type":"halt"}}
+]
+```
+
+Triggered events are written to `risk_events` (`kind='trigger'`).
+
 ## Security
 
 - The API key is read from the environment (`NOBITEX_API_KEY`) and sent only as

@@ -1,22 +1,17 @@
-# State — 2026-08-24
+# State — 2026-08-25
 
-## Intent    — implement P1-4 DCA (averaging down) (Cryptohopper parity, Phase 1) and keep `.context/` updated at each step
-## Touched   — src/strategy/dca.ts — created: DcaLadder (sorted levels, per-position cursor, maxOrders, consumed-on-approval) — done
-## Touched   — src/config.ts — DCA_ENABLED / DCA_LEVELS / DCA_MAX_ORDERS_PER_POSITION schema + DcaLevel type + parseDcaLevels (validated, sorted) — done
-## Touched   — src/risk/manager.ts — gates refactored to private gates(); evaluateBuy + evaluateDca (skips open-position gate only) — done
-## Touched   — src/strategy/hybrid.ts — DCA check on holding branch after exits; emits BUY dca:true with sizePct=buyPct when level clears risk — done
-## Touched   — src/types.ts — SignalDecision.dca; OrderRecord.kind — done
-## Touched   — src/db.ts — orders.kind column (default 'entry') + idempotent ALTER TABLE migration + insertOrder kind param — done
-## Touched   — src/execution/executor.ts — buy/sell/execute take kind; DCA fills recorded with kind='dca' — done
-## Touched   — src/index.ts — DcaLadder wired into strategy; startup log includes dca levels; executor.buy(kind) — done
-## Touched   — src/backtest/engine.ts — DcaLadder passed to replay strategy (avg entry merges via applyTrade) — done
-## Touched   — .env.example + README.md — DCA section + risk table row + orders.kind note — done
-## Touched   — tests/dca.test.ts — created: 10 tests (ladder order/maxOrders/disabled, evaluateDca gate skip, strategy emit/consume/blocked-pending/avg-entry merge, orders.kind migration) — done
-## Touched   — .context/implementation-plan.md — P1-4 marked DONE — done
-## Decisions — DCA default OFF; consumes a level only after risk approval (pending stays if blocked); cooldown/trade-cap/volatility/exposure still apply; open-position gate skipped
-## Decisions — orders.kind = entry|dca|exit; ALTER TABLE migration is idempotent; legacy rows default to 'entry'
-## Decisions — gap-downs consume one level per tick (cursor semantics), not every crossed level
-## Decisions — DCA only engages if the stop-loss doesn't fire first (test config uses stopLossPct above ladder depth)
-## Verified  — 54/54 tests pass (44 + 10 new); typecheck + build clean
-## Open      — optimistic consume: level is consumed at signal emission (risk-approved) even if the executor fill later fails; in dry-run this is negligible
-## Next      — commit + push P1-4; then P1-5 Trigger engine (rule DSL) or user's choice
+## Intent    — implement P1-5 Trigger engine (rule DSL) (Cryptohopper parity, Phase 1) and keep `.context/` updated at each step
+## Touched   — src/triggers/engine.ts — created: TriggerEngine + rule types; conditions rsi/price/sentiment below/above; actions notify/halt; edge-triggered firing — done
+## Touched   — src/config.ts — TRIGGERS JSON env (zod-validated: dup id / unknown symbol rejected); config.triggers — done
+## Touched   — src/risk/manager.ts — public haltTrading(reason) sets tradingHalted + logs halt-trigger event — done
+## Touched   — src/index.ts — TriggerEngine constructed; per-symbol evaluation in tick (after poll/refresh, before strategy); events -> risk_events(kind=trigger) + notify/halt dispatch — done
+## Touched   — .env.example + README.md — TRIGGERS docs + trigger rules section (condition/action tables + example) — done
+## Touched   — tests/triggers.test.ts — created: 11 tests (edge firing, re-arm, condition types, symbol filter, null inputs, action/message + {symbol} interpolation, count/reset, config validation x3, haltTrading wiring) — done
+## Touched   — .context/implementation-plan.md — P1-5 marked DONE — done
+## Decisions — triggers are edge-triggered (fire once on false->true; re-arm when condition clears) to avoid per-tick spam; state in-memory (resets on restart)
+## Decisions — first version ships notify + halt only; buy/sell/volume-spike conditions deliberately deferred
+## Decisions — trigger inputs computed per symbol in tick (rsi/price/sentiment); engine stays decoupled via TriggerInput
+## Decisions — halt uses the same tradingHalted gate as the daily-loss halt; trigger halt persists until process restart
+## Verified  — 65/65 tests pass (54 + 11 new); typecheck + build clean; committed 5b6178a (P1-4) previously
+## Open      — halt from a trigger is process-lifetime only (no persisted halt); buy/sell trigger actions deferred to a later iteration
+## Next      — commit + push P1-5; then Phase 2 (strategy DSL/config pools) or user's choice

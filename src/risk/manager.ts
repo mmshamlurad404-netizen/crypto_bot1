@@ -259,4 +259,9 @@ export class RiskManager {
   recordTrade(pair: SymbolPair): void {
     this.lastTradeAt.set(pair.key, this.now());
   }
+
+  haltTrading(reason: string): void {
+    this.tradingHalted = reason;
+    this.logEvent(null, "halt-trigger", reason, null);
+  }
 }

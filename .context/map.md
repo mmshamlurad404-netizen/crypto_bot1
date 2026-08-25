@@ -1,5 +1,5 @@
 # Project Map — nobitex-sentiment-bot
-Updated: 2026-08-24
+Updated: 2026-08-25
 
 ## Shape
 ```
@@ -16,6 +16,7 @@ Updated: 2026-08-24
 │   ├── risk/               # Limit gates, volatility sizing, daily-loss halt, trailing stops
 │   ├── sentiment/          # HTTP webhook + JSONL feed + aggregation engine
 │   ├── strategy/           # Hybrid RSI + sentiment entry/exit rules + DCA ladder (P1-4)
+│   ├── triggers/           # Declarative rule DSL: condition -> notify/halt (P1-5)
 │   ├── index.ts            # Orchestrator: poll loop, execution, scheduling
 │   ├── config.ts           # Zod-validated env config
 │   ├── db.ts               # SQLite audit store (better-sqlite3)
@@ -47,6 +48,7 @@ src/sentiment/engine.ts — confidence × time-decay weighted sentiment score
 src/sentiment/server.ts — HTTP server: /healthz, POST /api/v1/sentiment, JSONL file poller
 src/strategy/hybrid.ts — evaluate(): warmup gate, exits, then sentiment+RSI entry with risk veto
 src/strategy/dca.ts — DcaLadder: sorted {belowPct,buyPct} levels consumed in order per position; consumed only after risk approval; maxOrders cap
+src/triggers/engine.ts — TriggerEngine: edge-triggered rules (rsi/price/sentiment below/above) -> notify/halt; per-symbol evaluation before strategy
 src/risk/manager.ts — evaluateBuy gate chain, volatility sizing, stop-loss/take-profit, trailing stops, evaluateDca (skips open-position gate), halt state
 src/portfolio/manager.ts — dry-run virtual holdings vs live wallets; applyTrade PnL accounting
 src/execution/executor.ts — fills at best bid/ask, dry-run simulation or live addOrder, fee calc
@@ -63,6 +65,7 @@ tests/backtest.test.ts — backtest replay (win/loss/flat) + UDF mapping
 tests/metrics.test.ts — analytics over synthetic positions/snapshots/trades
 tests/risk.test.ts — risk gate order and halt behavior
 tests/dca.test.ts — DCA ladder order/caps, evaluateDca gate skip, strategy emit/consume/merge, orders.kind migration
+tests/triggers.test.ts — trigger edge firing/re-arm, condition types, config validation, halt wiring
 tests/strategy.test.ts — hybrid strategy buy/hold/sell paths
 tests/sentiment.test.ts — sentiment aggregation behavior
 .env.example — documented env contract; copy to .env
@@ -93,6 +96,9 @@ src/risk/manager.ts:44 sizeByVolatility — scales size by benchmark/volatility 
 src/risk/manager.ts:105 evaluateBuy — delegates to gates(..., skipOpenPosition=false)
 src/risk/manager.ts:109 evaluateDca — delegates to gates(..., skipOpenPosition=true); used by DCA fills
 src/risk/manager.ts:113 gates — sequential gates: halted, cooldown, volatility, min value, exposure, position size, daily loss, trade count, RSI (open-position gate optional)
+src/risk/manager.ts:263 haltTrading — public halt; sets tradingHalted + logs halt-trigger event
+src/triggers/engine.ts:99 evaluate — per-symbol rule scan; fires only on false->true edge (prevTruth map keyed by rule id); reset() clears edge state
+src/config.ts:176 parseTriggers — zod-validated TRIGGERS JSON; rejects dup ids and symbols not in SYMBOLS
 src/risk/manager.ts:189 checkStopLoss — stop at entryPrice × (1 − stopLossPct/100)
 src/risk/manager.ts:209 checkTrailingStops — per-position peak + armed flags; stop arms at ACTIVATE% above entry, TP arms too; armed TP supersedes fixed TP in strategy; state keyed by positionId, resets on close/change
 src/portfolio/manager.ts:134 applyTrade — updates holdings, merges/re-opens positions, stores daily realized PnL meta
@@ -111,10 +117,11 @@ src/db.ts:290 snapshotsBetween — equity/positions_value series by ts range (dr
 ## Data flow
 1. Sentiment: scripts/feed_sentiment.sh (or external pipeline) → POST :3001/api/v1/sentiment → src/sentiment/server.ts:handle → engine.ingest → sentiment_events table
 2. Prices: src/market/priceFeed.ts poll() → GET /market/stats → in-memory series → indicators.ts (RSI, volatility)
-3. Decision: strategy/hybrid.ts evaluate() → risk/manager.ts evaluateBuy() veto → signals table (every decision logged)
-4. Execution: executor.ts execute() → orders + trades tables → portfolio.applyTrade() → positions table + meta `day:YYYY-MM-DD:realized_pnl`
-5. Notify: TelegramNotifier.send() → alerts table → api.telegram.org sendMessage
-6. Report: DailyReporter.generateReport() → portfolio_snapshots table + meta prev_day_equity (read back by RiskManager)
+3. Triggers: src/triggers/engine.ts evaluate() per symbol in tick (rsi/price/sentiment) → risk_events(kind=trigger) + notify (alerts table) / halt (risk manager)
+4. Decision: strategy/hybrid.ts evaluate() → risk/manager.ts evaluateBuy/evaluateDca veto → signals table (every decision logged)
+5. Execution: executor.ts execute() → orders + trades tables → portfolio.applyTrade() → positions table + meta `day:YYYY-MM-DD:realized_pnl`
+6. Notify: TelegramNotifier.send() → alerts table → api.telegram.org sendMessage
+7. Report: DailyReporter.generateReport() → portfolio_snapshots table + meta prev_day_equity (read back by RiskManager)
 
 ## Conventions & gotchas
 - ESM only (`"type": "module"`); TS source imports must use `.js` extensions (NodeNext resolution)
@@ -137,3 +144,4 @@ src/db.ts:290 snapshotsBetween — equity/positions_value series by ts range (dr
 - Strategy exit order: fixed stop-loss (floor) → trailing stop/TP → fixed take-profit (skipped while trailing TP armed); keep TRAILING_TP_ACTIVATE_PCT <= TAKE_PROFIT_PCT for trailing TP to take effect
 - DCA: levels sorted by belowPct; consumed one per tick in order (gap-downs don't skip levels); level consumed only after risk approval — blocked levels stay pending; stop-loss fires before a deep DCA level unless STOP_LOSS_PCT exceeds the level depth
 - DCA fills pass normal risk gates minus the open-position gate; cooldown/trade-cap still apply, so consecutive fills are throttled by COOLDOWN_MINUTES
+- Trigger rules are edge-triggered and in-memory (reset on restart); halt persists for the process lifetime; trigger inputs (rsi/price/sentiment) are recomputed per symbol in tick before the strategy runs

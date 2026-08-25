@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { z } from "zod";
 import { SymbolPair, QuoteCurrency } from "./types.js";
+import { TriggerRule } from "./triggers/engine.js";
 
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
@@ -52,6 +53,8 @@ const envSchema = z.object({
   DCA_ENABLED: z.coerce.boolean().default(false),
   DCA_MAX_ORDERS_PER_POSITION: z.coerce.number().int().min(0).default(4),
   DCA_LEVELS: z.string().default("[]"),
+
+  TRIGGERS: z.string().default("[]"),
 
   TELEGRAM_BOT_TOKEN: z.string().default(""),
   TELEGRAM_CHAT_ID: z.string().default(""),
@@ -108,6 +111,7 @@ export interface BotConfig {
   dcaEnabled: boolean;
   dcaLevels: DcaLevel[];
   dcaMaxOrdersPerPosition: number;
+  triggers: TriggerRule[];
   telegramBotToken: string;
   telegramChatId: string;
   dailyReportTime: string;
@@ -156,12 +160,50 @@ function parseDcaLevels(raw: string): DcaLevel[] {
   return levels;
 }
 
+const triggerSchema = z.object({
+  id: z.string().min(1),
+  symbol: z.string().min(1),
+  when: z.object({
+    type: z.enum(["rsi_below", "rsi_above", "price_below", "price_above", "sentiment_below", "sentiment_above"]),
+    value: z.number(),
+  }),
+  then: z.object({
+    type: z.enum(["notify", "halt"]),
+    message: z.string().optional(),
+  }),
+});
+
+function parseTriggers(raw: string): TriggerRule[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("TRIGGERS must be a JSON array, e.g. [{\"id\":\"btc-dip\",\"symbol\":\"btc/rls\",\"when\":{\"type\":\"rsi_below\",\"value\":25},\"then\":{\"type\":\"notify\"}}]");
+  }
+  const result = z.array(triggerSchema).parse(parsed);
+  const seen = new Set<string>();
+  for (const rule of result) {
+    if (seen.has(rule.id)) {
+      throw new Error(`TRIGGERS contains a duplicate rule id "${rule.id}"`);
+    }
+    seen.add(rule.id);
+  }
+  return result;
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
   const parsed = envSchema.parse(env);
   const symbols = parseSymbols(parsed.SYMBOLS, parsed.QUOTE_CURRENCY);
   const hours = parsed.SENTIMENT_WINDOW_HOURS;
   const halfLife = parsed.SENTIMENT_HALF_LIFE_HOURS;
   const dcaLevels = parseDcaLevels(parsed.DCA_LEVELS);
+  const triggers = parseTriggers(parsed.TRIGGERS);
+  const symbolKeys = new Set(symbols.map((s) => s.key));
+  for (const rule of triggers) {
+    if (!symbolKeys.has(rule.symbol)) {
+      throw new Error(`TRIGGERS rule "${rule.id}" references symbol "${rule.symbol}" which is not in SYMBOLS`);
+    }
+  }
   return {
     nodeEnv: parsed.NODE_ENV,
     logLevel: parsed.LOG_LEVEL,
@@ -205,6 +247,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     dcaEnabled: parsed.DCA_ENABLED,
     dcaLevels,
     dcaMaxOrdersPerPosition: parsed.DCA_MAX_ORDERS_PER_POSITION,
+    triggers,
     telegramBotToken: parsed.TELEGRAM_BOT_TOKEN.trim(),
     telegramChatId: parsed.TELEGRAM_CHAT_ID.trim(),
     dailyReportTime: parsed.DAILY_REPORT_TIME,

@@ -10,6 +10,8 @@ import { RiskManager } from "./risk/manager.js";
 import { Executor } from "./execution/executor.js";
 import { HybridStrategy } from "./strategy/hybrid.js";
 import { DcaLadder } from "./strategy/dca.js";
+import { TriggerEngine } from "./triggers/engine.js";
+import { computeIndicators } from "./indicators.js";
 import { TelegramNotifier } from "./alerts/telegram.js";
 import { DailyReporter } from "./alerts/report.js";
 import { SignalDecision } from "./types.js";
@@ -68,6 +70,7 @@ function main(): void {
     levels: config.dcaLevels,
     maxOrders: config.dcaMaxOrdersPerPosition,
   });
+  const triggers = new TriggerEngine(config.triggers);
   const strategy = new HybridStrategy(db, priceFeed, sentimentEngine, portfolio, risk, {
     rsiPeriod: config.rsiPeriod,
     rsiOverbought: config.rsiOverbought,
@@ -98,6 +101,7 @@ function main(): void {
         levels: config.dcaLevels.map((l) => `${l.belowPct}%/-${l.buyPct}%`),
         maxOrdersPerPosition: config.dcaMaxOrdersPerPosition,
       },
+      triggers: triggers.count,
     },
     "bot started"
   );
@@ -155,6 +159,25 @@ function main(): void {
       await portfolio.refresh();
       const state = portfolio.state();
       for (const pair of config.symbols) {
+        const closes = priceFeed.getCloses(pair.key);
+        const { rsi } = computeIndicators(closes, config.rsiPeriod);
+        const sentiment = sentimentEngine.snapshot(pair.src).score;
+        const price = priceFeed.getLatestPrice(pair.key);
+        for (const ev of triggers.evaluate({ symbol: pair.key, price, rsi, sentiment })) {
+          logger.warn({ trigger: ev.ruleId, symbol: ev.symbol, action: ev.actionType }, "trigger fired");
+          db.insertRiskEvent({
+            ts: new Date().toISOString(),
+            symbol: ev.symbol,
+            kind: "trigger",
+            message: ev.message,
+            data: JSON.stringify({ ruleId: ev.ruleId, action: ev.actionType }),
+          });
+          if (ev.actionType === "notify") {
+            await notifier.send(ev.message, "trigger");
+          } else if (ev.actionType === "halt") {
+            risk.haltTrading(ev.message);
+          }
+        }
         const decision = strategy.evaluate(pair);
         if (decision.action === "BUY" || decision.action === "SELL") {
           db.insertSignal({

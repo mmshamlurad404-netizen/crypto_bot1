@@ -1,6 +1,6 @@
 # Implementation Plan — Cryptohopper feature parity
 
-Updated: 2026-08-24
+Updated: 2026-08-25
 Basis: `.context/gap-analysis.md` priority ranking. Scope = on-prem, Nobitex-only, safety-first (DRY_RUN / TRADING_ENABLED stay defaulted to safe).
 
 ## Phase 1 — Validate & instrument what we already trade (do first)
@@ -33,11 +33,12 @@ Basis: `.context/gap-analysis.md` priority ranking. Scope = on-prem, Nobitex-onl
 - `orders.kind` column (`entry|dca|exit`) with idempotent ALTER TABLE migration for existing DBs; executor takes a `kind` param; `portfolio.applyTrade` already merges + recomputes avg entry.
 - Tests `tests/dca.test.ts` (10: ladder order/caps, evaluateDca gate skip, strategy emit/consume/blocked/merge, migration); suite 54/54, typecheck + build clean.
 
-### P1-5 Trigger engine (rule DSL)
-- New `src/triggers/engine.ts`: declarative rules read from env/JSON (e.g., `TRIGGER_RSI_OVERSOLD_NOTIFY`): condition (price below, RSI cross, sentiment above, volume spike) → action (notify / buy / sell / halt).
-- Registry of predicates + actions; engine evaluated in `tick` after price poll, before strategy.
-- Replaces hard-coded exit shortcuts over time; first version: notify + manual overrides.
-- Tests: `tests/triggers.test.ts` condition→action mapping.
+### P1-5 Trigger engine (rule DSL) — DONE (2026-08-25)
+- `src/triggers/engine.ts`: declarative `TRIGGERS` rules (id/symbol/when/then); conditions rsi/price/sentiment below/above; actions notify (Telegram) + halt; edge-triggered (fires once on false→true, re-arms on crossing back).
+- Config: `TRIGGERS` JSON env validated by zod (dup id / unknown symbol rejected against SYMBOLS); `config.triggers`.
+- `src/risk/manager.ts`: public `haltTrading(reason)` sets the in-memory halt state (same gate used by daily-loss halt).
+- `src/index.ts`: engine evaluated per symbol in `tick` after poll/refresh, before strategy; events → risk_events(kind=trigger) + notify/halt handling.
+- Tests `tests/triggers.test.ts` (11: edge firing, re-arm, condition types, symbol filter, null inputs, actions/messages, config validation, halt wiring); suite 65/65, typecheck + build clean.
 
 ## Phase 2 — Generalize strategy & signal intake
 
