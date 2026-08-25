@@ -38,6 +38,7 @@ export interface SignalDecision {
   price: number | null;
   reason: string;
   sizePct?: number;
+  dca?: boolean;
 }
 
 export interface SentimentInput {
@@ -70,6 +71,7 @@ export interface OrderRecord {
   symbol: string;
   side: "buy" | "sell";
   execution: "market" | "limit";
+  kind: string;
   amount: number;
   price: number | null;
   status: "new" | "filled" | "canceled" | "failed";

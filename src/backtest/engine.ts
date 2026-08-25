@@ -6,6 +6,7 @@ import { PortfolioManager } from "../portfolio/manager.js";
 import { RiskManager } from "../risk/manager.js";
 import { SentimentEngine } from "../sentiment/engine.js";
 import { HybridStrategy } from "../strategy/hybrid.js";
+import { DcaLadder } from "../strategy/dca.js";
 import { SymbolPair, SentimentInput } from "../types.js";
 import { BacktestBar } from "./data.js";
 
@@ -115,7 +116,12 @@ export function runBacktest(args: RunBacktestArgs): BacktestResult {
       rsiEntryUpper: config.rsiEntryUpper,
       sentimentEntryThreshold: config.sentimentEntryThreshold,
       sentimentExitThreshold: config.sentimentExitThreshold,
-    }
+    },
+    new DcaLadder({
+      enabled: config.dcaEnabled,
+      levels: config.dcaLevels,
+      maxOrders: config.dcaMaxOrdersPerPosition,
+    })
   );
 
   const sortedEvents = [...args.sentimentEvents].sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));

@@ -56,15 +56,15 @@ export class Executor {
     return amount.toFixed(8).replace(/\.?0+$/, "");
   }
 
-  async buy(pair: SymbolPair, amount: number): Promise<FillResult | null> {
-    return this.execute(pair, "buy", amount);
+  async buy(pair: SymbolPair, amount: number, kind: "entry" | "dca" = "entry"): Promise<FillResult | null> {
+    return this.execute(pair, "buy", amount, kind);
   }
 
   async sell(pair: SymbolPair, amount: number): Promise<FillResult | null> {
-    return this.execute(pair, "sell", amount);
+    return this.execute(pair, "sell", amount, "exit");
   }
 
-  private async execute(pair: SymbolPair, side: "buy" | "sell", amount: number): Promise<FillResult | null> {
+  private async execute(pair: SymbolPair, side: "buy" | "sell", amount: number, kind: "entry" | "dca" | "exit" = "entry"): Promise<FillResult | null> {
     const ts = new Date().toISOString();
     const clientOrderId = this.clientOrderId();
 
@@ -89,6 +89,7 @@ export class Executor {
         dryRun: this.dryRun,
         nobitexOrderId: null,
         error: "no market price available",
+        kind,
       });
       this.logger.warn({ symbol: pair.key, side }, "execution skipped: no price available");
       return null;
@@ -147,6 +148,7 @@ export class Executor {
       dryRun: this.dryRun,
       nobitexOrderId,
       error,
+      kind,
     });
 
     if (error) {

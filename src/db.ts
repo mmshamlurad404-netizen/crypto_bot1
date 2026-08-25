@@ -64,7 +64,8 @@ export class AuditDb {
         status TEXT NOT NULL,
         dry_run INTEGER NOT NULL,
         nobitex_order_id TEXT,
-        error TEXT
+        error TEXT,
+        kind TEXT NOT NULL DEFAULT 'entry'
       );
 
       CREATE TABLE IF NOT EXISTS trades (
@@ -140,6 +141,14 @@ export class AuditDb {
       CREATE INDEX IF NOT EXISTS idx_sentiment_ts ON sentiment_events(ts);
       CREATE INDEX IF NOT EXISTS idx_snapshots_ts ON portfolio_snapshots(ts);
     `);
+    this.migrateOrderKind();
+  }
+
+  private migrateOrderKind(): void {
+    const cols = this.db.prepare("PRAGMA table_info(orders)").all() as { name: string }[];
+    if (!cols.some((c) => c.name === "kind")) {
+      this.db.exec("ALTER TABLE orders ADD COLUMN kind TEXT NOT NULL DEFAULT 'entry'");
+    }
   }
 
   setMeta(key: string, value: string): void {
@@ -172,10 +181,11 @@ export class AuditDb {
     dryRun: boolean;
     nobitexOrderId: string | null;
     error: string | null;
+    kind?: string;
   }): number {
     const res = this.db
       .prepare(
-        "INSERT INTO orders (ts, client_order_id, symbol, side, execution, amount, price, status, dry_run, nobitex_order_id, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        "INSERT INTO orders (ts, client_order_id, symbol, side, execution, amount, price, status, dry_run, nobitex_order_id, error, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
       )
       .run(
         order.ts,
@@ -188,7 +198,8 @@ export class AuditDb {
         order.status,
         order.dryRun ? 1 : 0,
         order.nobitexOrderId,
-        order.error
+        order.error,
+        order.kind ?? "entry"
       );
     return Number(res.lastInsertRowid);
   }

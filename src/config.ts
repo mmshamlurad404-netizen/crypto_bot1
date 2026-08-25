@@ -49,12 +49,21 @@ const envSchema = z.object({
   COOLDOWN_MINUTES: z.coerce.number().int().min(0).default(30),
   FEE_PCT: z.coerce.number().min(0).max(10).default(0.25),
 
+  DCA_ENABLED: z.coerce.boolean().default(false),
+  DCA_MAX_ORDERS_PER_POSITION: z.coerce.number().int().min(0).default(4),
+  DCA_LEVELS: z.string().default("[]"),
+
   TELEGRAM_BOT_TOKEN: z.string().default(""),
   TELEGRAM_CHAT_ID: z.string().default(""),
   DAILY_REPORT_TIME: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).default("08:00"),
 
   DB_PATH: z.string().default("./data/audit.db"),
 });
+
+export interface DcaLevel {
+  belowPct: number;
+  buyPct: number;
+}
 
 export interface BotConfig {
   nodeEnv: string;
@@ -96,6 +105,9 @@ export interface BotConfig {
   trailingTpActivatePct: number;
   cooldownMinutes: number;
   feePct: number;
+  dcaEnabled: boolean;
+  dcaLevels: DcaLevel[];
+  dcaMaxOrdersPerPosition: number;
   telegramBotToken: string;
   telegramChatId: string;
   dailyReportTime: string;
@@ -126,11 +138,30 @@ function parseSymbols(raw: string, quote: QuoteCurrency): SymbolPair[] {
   return result;
 }
 
+function parseDcaLevels(raw: string): DcaLevel[] {
+  const parsed: unknown = JSON.parse(raw);
+  if (!Array.isArray(parsed)) {
+    throw new Error("DCA_LEVELS must be a JSON array, e.g. [{\"belowPct\":5,\"buyPct\":5}]");
+  }
+  const levels = parsed.map((entry, i) => {
+    const e = entry as Record<string, unknown>;
+    const belowPct = Number(e.belowPct);
+    const buyPct = Number(e.buyPct);
+    if (!Number.isFinite(belowPct) || belowPct <= 0 || !Number.isFinite(buyPct) || buyPct <= 0) {
+      throw new Error(`DCA_LEVELS[${i}] needs positive belowPct and buyPct`);
+    }
+    return { belowPct, buyPct };
+  });
+  levels.sort((a, b) => a.belowPct - b.belowPct);
+  return levels;
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
   const parsed = envSchema.parse(env);
   const symbols = parseSymbols(parsed.SYMBOLS, parsed.QUOTE_CURRENCY);
   const hours = parsed.SENTIMENT_WINDOW_HOURS;
   const halfLife = parsed.SENTIMENT_HALF_LIFE_HOURS;
+  const dcaLevels = parseDcaLevels(parsed.DCA_LEVELS);
   return {
     nodeEnv: parsed.NODE_ENV,
     logLevel: parsed.LOG_LEVEL,
@@ -171,6 +202,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     trailingTpActivatePct: parsed.TRAILING_TP_ACTIVATE_PCT,
     cooldownMinutes: parsed.COOLDOWN_MINUTES,
     feePct: parsed.FEE_PCT,
+    dcaEnabled: parsed.DCA_ENABLED,
+    dcaLevels,
+    dcaMaxOrdersPerPosition: parsed.DCA_MAX_ORDERS_PER_POSITION,
     telegramBotToken: parsed.TELEGRAM_BOT_TOKEN.trim(),
     telegramChatId: parsed.TELEGRAM_CHAT_ID.trim(),
     dailyReportTime: parsed.DAILY_REPORT_TIME,

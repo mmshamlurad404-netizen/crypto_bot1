@@ -103,6 +103,20 @@ export class RiskManager {
   }
 
   evaluateBuy(pair: SymbolPair, orderValueInQuote: number, volatility: number | null, rsi: number | null): RiskVerdict {
+    return this.gates(pair, orderValueInQuote, volatility, rsi, false);
+  }
+
+  evaluateDca(pair: SymbolPair, orderValueInQuote: number, volatility: number | null, rsi: number | null): RiskVerdict {
+    return this.gates(pair, orderValueInQuote, volatility, rsi, true);
+  }
+
+  private gates(
+    pair: SymbolPair,
+    orderValueInQuote: number,
+    volatility: number | null,
+    rsi: number | null,
+    skipOpenPosition: boolean
+  ): RiskVerdict {
     const equity = this.portfolio.equity();
     const state = this.portfolio.state();
 
@@ -114,7 +128,7 @@ export class RiskManager {
       this.db.setMeta("prev_day_equity", String(this.db.latestSnapshot()!.equity));
     }
 
-    if (this.hasOpenPosition(pair)) {
+    if (!skipOpenPosition && this.hasOpenPosition(pair)) {
       this.logEvent(pair.key, "blocked-position", "position already open", { symbol: pair.key });
       return { allowed: false, reason: "position already open for symbol", halted: false, sizePct: 0 };
     }

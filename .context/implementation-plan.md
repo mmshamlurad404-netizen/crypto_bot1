@@ -1,6 +1,6 @@
 # Implementation Plan — Cryptohopper feature parity
 
-Updated: 2026-08-21
+Updated: 2026-08-24
 Basis: `.context/gap-analysis.md` priority ranking. Scope = on-prem, Nobitex-only, safety-first (DRY_RUN / TRADING_ENABLED stay defaulted to safe).
 
 ## Phase 1 — Validate & instrument what we already trade (do first)
@@ -25,11 +25,13 @@ Basis: `.context/gap-analysis.md` priority ranking. Scope = on-prem, Nobitex-onl
 - Strategy `src/strategy/hybrid.ts`: trailing checks run between stop-loss and fixed take-profit; fixed TP skipped while trailing TP armed.
 - Tests `tests/risk.test.ts`: 5 trailing scenarios (no-hit before activation, arm+ratchet, TP pullback exit, supersede fixed TP, state reset on close/re-entry); suite 44/44, typecheck + build clean.
 
-### P1-4 DCA (averaging down)
-- New `src/strategy/dca.ts` + config `DCA_LEVELS` (JSON array of `{belowPct, buyPct}`), `DCA_MAX_ORDERS_PER_POSITION`, `DCA_ENABLED`.
-- On tick, for open position: if price < entry × (1 − belowPct) and a fresh level not yet consumed, augment position via normal risk gates (skip open-position gate only for DCA buys).
-- DCA buys recorded as `orders.kind = 'dca'`; position avg entry recomputed in `portfolio.applyTrade`.
-- Tests: `tests/dca.test.ts` ladder descent/augment/avg-price recompute.
+### P1-4 DCA (averaging down) — DONE (2026-08-24)
+- `src/strategy/dca.ts`: `DcaLadder` — levels sorted by `belowPct`, consumed in order via a per-position cursor; gap-downs still consume one level per tick; `maxOrders` caps fills.
+- Config: `DCA_ENABLED` (default false), `DCA_LEVELS` (JSON `[{belowPct,buyPct}]`, validated/sorted), `DCA_MAX_ORDERS_PER_POSITION`; wired through `index.ts` + backtest engine.
+- `src/risk/manager.ts`: gates refactored into `private gates(...)`; `evaluateBuy` (open-position gate on) and `evaluateDca` (gate skipped) share the chain — cooldown/trade-cap/volatility/exposure still apply.
+- `src/strategy/hybrid.ts`: on holding ticks, if price ≤ avg entry × (1−belowPct) and the next unconsumed level clears risk, emit BUY with `dca:true` + `sizePct=buyPct`; level consumed only on risk approval.
+- `orders.kind` column (`entry|dca|exit`) with idempotent ALTER TABLE migration for existing DBs; executor takes a `kind` param; `portfolio.applyTrade` already merges + recomputes avg entry.
+- Tests `tests/dca.test.ts` (10: ladder order/caps, evaluateDca gate skip, strategy emit/consume/blocked/merge, migration); suite 54/54, typecheck + build clean.
 
 ### P1-5 Trigger engine (rule DSL)
 - New `src/triggers/engine.ts`: declarative rules read from env/JSON (e.g., `TRIGGER_RSI_OVERSOLD_NOTIFY`): condition (price below, RSI cross, sentiment above, volume spike) → action (notify / buy / sell / halt).

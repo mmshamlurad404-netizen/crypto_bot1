@@ -129,10 +129,15 @@ All enforced before any order:
 | Min order value | `MIN_ORDER_VALUE` | Rejects dust orders |
 | Re-entry cooldown | `COOLDOWN_MINUTES` | Per-symbol cooldown after a trade |
 | One position per symbol | built-in | No pyramiding by default |
+| DCA ladder | `DCA_ENABLED` / `DCA_LEVELS` / `DCA_MAX_ORDERS_PER_POSITION` | Averages down: open positions that drop below `belowPct` of the avg entry get topped up by `buyPct`% of equity, level by level, through the normal risk gates |
 
 The volatility gate directly addresses the "avoid overexposure to volatile
 assets" requirement: entries are skipped when per-sample volatility exceeds
 `VOLATILITY_MAX`, and position size is scaled down as volatility rises.
+
+DCA fills are recorded with `kind='dca'` in the `orders` table and the averaged
+entry price is written back to the position, so a recovery to the new average
+roughly breaks even. DCA is disabled by default.
 
 ## Security
 

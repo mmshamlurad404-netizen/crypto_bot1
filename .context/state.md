@@ -1,18 +1,22 @@
-# State — 2026-08-23
+# State — 2026-08-24
 
-## Intent    — implement P1-3 trailing stop-loss / trailing take-profit (Cryptohopper parity, Phase 1) and keep `.context/` updated at each step
-## Touched   — src/config.ts — added TRAILING_STOP_PCT / TRAILING_STOP_ACTIVATE_PCT / TRAILING_TP_PCT / TRAILING_TP_ACTIVATE_PCT (Zod, trailing stop/TP default 0 = disabled) — done
-## Touched   — src/risk/manager.ts — added RiskConfigShape fields, TrailingState map (positionId/peak/stopArmed/tpArmed), TrailingCheck result, checkTrailingStops — done
-## Touched   — src/strategy/hybrid.ts — trailing checks run after stop-loss, before fixed TP; fixed TP skipped while trailing TP armed — done
-## Touched   — src/index.ts — RiskManager wiring of the 4 new config fields — done
-## Touched   — src/backtest/engine.ts — RiskConfigShape literal extended with the 4 fields — done
-## Touched   — .env.example — documented trailing section (activation, ratchet, supersede note) — done
-## Touched   — tests/risk.test.ts — config literal extended + 5 trailing tests (no-hit before activation, arm+ratchet, TP pullback, supersede fixed TP, reset on close/re-entry) — done
-## Touched   — .context/implementation-plan.md — P1-3 marked DONE — done
-## Decisions — trailing stop/TP default to 0 (off); when off, existing fixed SL/TP behavior is unchanged
-## Decisions — armed trailing TP supersedes fixed TP in HybridStrategy; keep TRAILING_TP_ACTIVATE_PCT <= TAKE_PROFIT_PCT for it to take effect
-## Decisions — fixed stop-loss stays as the unconditional floor; trailing stop only triggers once armed above entry
-## Decisions — trailing state is in-memory keyed by positionId; resets on close or when the open position changes
-## Verified  — 44/44 tests pass (39 + 5 new); typecheck + build clean; committed d3ea5e8 + pushed to origin/master
-## Open      — trailing behavior only validated in unit tests so far; backtest replay with trailing on a real history pull would be a good sanity check (optional)
-## Next      — P1-4 DCA (averaging down) or user's choice
+## Intent    — implement P1-4 DCA (averaging down) (Cryptohopper parity, Phase 1) and keep `.context/` updated at each step
+## Touched   — src/strategy/dca.ts — created: DcaLadder (sorted levels, per-position cursor, maxOrders, consumed-on-approval) — done
+## Touched   — src/config.ts — DCA_ENABLED / DCA_LEVELS / DCA_MAX_ORDERS_PER_POSITION schema + DcaLevel type + parseDcaLevels (validated, sorted) — done
+## Touched   — src/risk/manager.ts — gates refactored to private gates(); evaluateBuy + evaluateDca (skips open-position gate only) — done
+## Touched   — src/strategy/hybrid.ts — DCA check on holding branch after exits; emits BUY dca:true with sizePct=buyPct when level clears risk — done
+## Touched   — src/types.ts — SignalDecision.dca; OrderRecord.kind — done
+## Touched   — src/db.ts — orders.kind column (default 'entry') + idempotent ALTER TABLE migration + insertOrder kind param — done
+## Touched   — src/execution/executor.ts — buy/sell/execute take kind; DCA fills recorded with kind='dca' — done
+## Touched   — src/index.ts — DcaLadder wired into strategy; startup log includes dca levels; executor.buy(kind) — done
+## Touched   — src/backtest/engine.ts — DcaLadder passed to replay strategy (avg entry merges via applyTrade) — done
+## Touched   — .env.example + README.md — DCA section + risk table row + orders.kind note — done
+## Touched   — tests/dca.test.ts — created: 10 tests (ladder order/maxOrders/disabled, evaluateDca gate skip, strategy emit/consume/blocked-pending/avg-entry merge, orders.kind migration) — done
+## Touched   — .context/implementation-plan.md — P1-4 marked DONE — done
+## Decisions — DCA default OFF; consumes a level only after risk approval (pending stays if blocked); cooldown/trade-cap/volatility/exposure still apply; open-position gate skipped
+## Decisions — orders.kind = entry|dca|exit; ALTER TABLE migration is idempotent; legacy rows default to 'entry'
+## Decisions — gap-downs consume one level per tick (cursor semantics), not every crossed level
+## Decisions — DCA only engages if the stop-loss doesn't fire first (test config uses stopLossPct above ladder depth)
+## Verified  — 54/54 tests pass (44 + 10 new); typecheck + build clean
+## Open      — optimistic consume: level is consumed at signal emission (risk-approved) even if the executor fill later fails; in dry-run this is negligible
+## Next      — commit + push P1-4; then P1-5 Trigger engine (rule DSL) or user's choice

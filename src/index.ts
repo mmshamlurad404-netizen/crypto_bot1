@@ -9,6 +9,7 @@ import { PortfolioManager } from "./portfolio/manager.js";
 import { RiskManager } from "./risk/manager.js";
 import { Executor } from "./execution/executor.js";
 import { HybridStrategy } from "./strategy/hybrid.js";
+import { DcaLadder } from "./strategy/dca.js";
 import { TelegramNotifier } from "./alerts/telegram.js";
 import { DailyReporter } from "./alerts/report.js";
 import { SignalDecision } from "./types.js";
@@ -62,13 +63,18 @@ function main(): void {
     trailingTpActivatePct: config.trailingTpActivatePct,
   });
   const executor = new Executor(db, client, priceFeed, portfolio, risk, config.dryRun, config.feePct, logger);
+  const dcaLadder = new DcaLadder({
+    enabled: config.dcaEnabled,
+    levels: config.dcaLevels,
+    maxOrders: config.dcaMaxOrdersPerPosition,
+  });
   const strategy = new HybridStrategy(db, priceFeed, sentimentEngine, portfolio, risk, {
     rsiPeriod: config.rsiPeriod,
     rsiOverbought: config.rsiOverbought,
     rsiEntryUpper: config.rsiEntryUpper,
     sentimentEntryThreshold: config.sentimentEntryThreshold,
     sentimentExitThreshold: config.sentimentExitThreshold,
-  });
+  }, dcaLadder);
   const notifier = new TelegramNotifier(db, config.telegramBotToken, config.telegramChatId, logger);
   const reporter = new DailyReporter(db, portfolio, priceFeed, sentimentEngine, notifier, config.symbols, logger);
 
@@ -86,6 +92,11 @@ function main(): void {
         maxDailyLossPct: config.maxDailyLossPct,
         maxTradesPerDay: config.maxTradesPerDay,
         volatilityMax: config.volatilityMax,
+      },
+      dca: {
+        enabled: config.dcaEnabled,
+        levels: config.dcaLevels.map((l) => `${l.belowPct}%/-${l.buyPct}%`),
+        maxOrdersPerPosition: config.dcaMaxOrdersPerPosition,
       },
     },
     "bot started"
@@ -119,7 +130,7 @@ function main(): void {
         });
         return;
       }
-      const fill = await executor.buy(pair, amount);
+      const fill = await executor.buy(pair, amount, decision.dca ? "dca" : "entry");
       if (fill) {
         await notifier.sendTradeAlert(pair.key, "buy", fill.amount, fill.price, fill.total, fill.simulated, decision.reason);
       }

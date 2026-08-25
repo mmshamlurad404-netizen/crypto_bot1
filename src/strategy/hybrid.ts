@@ -4,6 +4,7 @@ import { PriceFeed } from "../market/priceFeed.js";
 import { PortfolioManager } from "../portfolio/manager.js";
 import { RiskManager } from "../risk/manager.js";
 import { SentimentEngine } from "../sentiment/engine.js";
+import { DcaLadder } from "./dca.js";
 import { SymbolPair, SignalDecision } from "../types.js";
 
 export interface StrategyConfigShape {
@@ -21,6 +22,7 @@ export class HybridStrategy {
   private portfolio: PortfolioManager;
   private risk: RiskManager;
   private config: StrategyConfigShape;
+  private dca: DcaLadder;
 
   constructor(
     db: AuditDb,
@@ -28,7 +30,8 @@ export class HybridStrategy {
     sentiment: SentimentEngine,
     portfolio: PortfolioManager,
     risk: RiskManager,
-    config: StrategyConfigShape
+    config: StrategyConfigShape,
+    dca: DcaLadder = new DcaLadder({ enabled: false, levels: [], maxOrders: 0 })
   ) {
     this.db = db;
     this.priceFeed = priceFeed;
@@ -36,6 +39,7 @@ export class HybridStrategy {
     this.portfolio = portfolio;
     this.risk = risk;
     this.config = config;
+    this.dca = dca;
   }
 
   evaluate(pair: SymbolPair): SignalDecision {
@@ -77,6 +81,28 @@ export class HybridStrategy {
       }
       if (rsi >= this.config.rsiOverbought) {
         return this.sellSignal(pair, rsi, sentiment, priceNow, `RSI ${rsi.toFixed(1)} >= ${this.config.rsiOverbought} (overbought)`);
+      }
+      const dcaLevel = this.dca.peek(openPos.id, openPos.entryPrice, priceNow);
+      if (dcaLevel) {
+        const equity = this.portfolio.equity();
+        const budget = equity * (dcaLevel.buyPct / 100);
+        const amount = budget / priceNow;
+        const orderValue = amount * priceNow;
+        const verdict = this.risk.evaluateDca(pair, orderValue, volatility, rsi);
+        if (verdict.allowed) {
+          this.dca.consume(openPos.id);
+          return {
+            symbol: pair.key,
+            action: "BUY",
+            rsi,
+            sentiment,
+            price: priceNow,
+            reason: `DCA: price ${priceNow} is ${dcaLevel.belowPct}% below avg entry, adding ${dcaLevel.buyPct}% of equity`,
+            sizePct: dcaLevel.buyPct,
+            dca: true,
+          };
+        }
+        this.logSignal(pair, "HOLD", rsi, sentiment, priceNow, `DCA level ${dcaLevel.belowPct}% blocked: ${verdict.reason}`);
       }
       return { symbol: pair.key, action: "HOLD", rsi, sentiment, price: priceNow, reason: "holding open position" };
     }
