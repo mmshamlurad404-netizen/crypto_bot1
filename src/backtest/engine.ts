@@ -5,8 +5,8 @@ import { PriceFeed } from "../market/priceFeed.js";
 import { PortfolioManager } from "../portfolio/manager.js";
 import { RiskManager } from "../risk/manager.js";
 import { SentimentEngine } from "../sentiment/engine.js";
-import { HybridStrategy } from "../strategy/hybrid.js";
 import { DcaLadder } from "../strategy/dca.js";
+import { buildStrategyPool } from "../config/pools.js";
 import { SymbolPair, SentimentInput } from "../types.js";
 import { BacktestBar } from "./data.js";
 
@@ -104,25 +104,29 @@ export function runBacktest(args: RunBacktestArgs): BacktestResult {
     },
     now
   );
-  const strategy = new HybridStrategy(
+  const dcaLadder = new DcaLadder({
+    enabled: config.dcaEnabled,
+    levels: config.dcaLevels,
+    maxOrders: config.dcaMaxOrdersPerPosition,
+  });
+  const strategyPool = buildStrategyPool({
+    pool: config.strategyPools,
+    symbols: [pair],
     db,
-    feed,
+    priceFeed: feed,
     sentiment,
     portfolio,
     risk,
-    {
+    strategyConfig: {
       rsiPeriod: config.rsiPeriod,
       rsiOverbought: config.rsiOverbought,
       rsiEntryUpper: config.rsiEntryUpper,
       sentimentEntryThreshold: config.sentimentEntryThreshold,
       sentimentExitThreshold: config.sentimentExitThreshold,
     },
-    new DcaLadder({
-      enabled: config.dcaEnabled,
-      levels: config.dcaLevels,
-      maxOrders: config.dcaMaxOrdersPerPosition,
-    })
-  );
+    dca: dcaLadder,
+  });
+  const strategy = strategyPool.get(pair.key)!;
 
   const sortedEvents = [...args.sentimentEvents].sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
   let eventIdx = 0;

@@ -8,10 +8,10 @@ import { SentimentWebhook } from "./sentiment/server.js";
 import { PortfolioManager } from "./portfolio/manager.js";
 import { RiskManager } from "./risk/manager.js";
 import { Executor } from "./execution/executor.js";
-import { HybridStrategy } from "./strategy/hybrid.js";
 import { DcaLadder } from "./strategy/dca.js";
 import { TriggerEngine } from "./triggers/engine.js";
 import { computeIndicators } from "./indicators.js";
+import { buildStrategyPool } from "./config/pools.js";
 import { TelegramNotifier } from "./alerts/telegram.js";
 import { DailyReporter } from "./alerts/report.js";
 import { SignalDecision } from "./types.js";
@@ -71,13 +71,23 @@ function main(): void {
     maxOrders: config.dcaMaxOrdersPerPosition,
   });
   const triggers = new TriggerEngine(config.triggers);
-  const strategy = new HybridStrategy(db, priceFeed, sentimentEngine, portfolio, risk, {
-    rsiPeriod: config.rsiPeriod,
-    rsiOverbought: config.rsiOverbought,
-    rsiEntryUpper: config.rsiEntryUpper,
-    sentimentEntryThreshold: config.sentimentEntryThreshold,
-    sentimentExitThreshold: config.sentimentExitThreshold,
-  }, dcaLadder);
+  const strategyPool = buildStrategyPool({
+    pool: config.strategyPools,
+    symbols: config.symbols,
+    db,
+    priceFeed,
+    sentiment: sentimentEngine,
+    portfolio,
+    risk,
+    strategyConfig: {
+      rsiPeriod: config.rsiPeriod,
+      rsiOverbought: config.rsiOverbought,
+      rsiEntryUpper: config.rsiEntryUpper,
+      sentimentEntryThreshold: config.sentimentEntryThreshold,
+      sentimentExitThreshold: config.sentimentExitThreshold,
+    },
+    dca: dcaLadder,
+  });
   const notifier = new TelegramNotifier(db, config.telegramBotToken, config.telegramChatId, logger);
   const reporter = new DailyReporter(db, portfolio, priceFeed, sentimentEngine, notifier, config.symbols, logger);
 
@@ -102,6 +112,7 @@ function main(): void {
         maxOrdersPerPosition: config.dcaMaxOrdersPerPosition,
       },
       triggers: triggers.count,
+      strategies: config.symbols.map((s) => `${s.key}:${config.strategyPools[s.key] ? config.strategyPools[s.key]!.kind : "hybrid"}`),
     },
     "bot started"
   );
@@ -178,7 +189,7 @@ function main(): void {
             risk.haltTrading(ev.message);
           }
         }
-        const decision = strategy.evaluate(pair);
+        const decision = strategyPool.get(pair.key)!.evaluate(pair);
         if (decision.action === "BUY" || decision.action === "SELL") {
           db.insertSignal({
             ts: new Date().toISOString(),

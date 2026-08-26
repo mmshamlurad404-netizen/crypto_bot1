@@ -163,6 +163,33 @@ Example:
 
 Triggered events are written to `risk_events` (`kind='trigger'`).
 
+## Strategy DSL & pools
+
+The hybrid strategy is the default, but you can assign a **declarative DSL
+strategy** to individual symbols via `STRATEGY_POOLS` (JSON object mapping
+`symbol -> "hybrid" | <dsl>`). Symbols not listed use the hybrid strategy.
+
+A DSL strategy is a JSON object with optional `warmupSamples`, `entry` and
+`exit` rule trees composed of nodes:
+
+| Node | Meaning |
+|---|---|
+| `{"rsi_lt": 35}` / `{"rsi_gt": 70}` | RSI below/above a level |
+| `{"volatility_lt": 0.05}` / `{"volatility_gt": 0.01}` | Volatility below/above |
+| `{"sentiment_gt": 0.3}` / `{"sentiment_lt": -0.2}` | Aggregate sentiment vs threshold |
+| `{"price_gt_ma": {"kind":"sma","period":20}}` / `price_lt_ma` | Price above/below SMA or EMA |
+| `{"and": [a, b]}` / `{"or": [a, b]}` / `{"not": a}` | Combinators |
+
+The `entry` tree gates buys (still passing the risk manager), and the `exit`
+tree triggers sells while holding. Fixed stop-loss/take-profit/trailing exits
+from the risk config always apply on top. Example:
+
+```json
+{"btc/rls":"hybrid","eth/rls":{"entry":{"and":[{"sentiment_gt":0.2},{"price_gt_ma":{"kind":"ema","period":20}}]},"exit":{"rsi_gt":75}}}
+```
+
+The backtester replays the pool assignment for the symbol under test.
+
 ## Security
 
 - The API key is read from the environment (`NOBITEX_API_KEY`) and sent only as

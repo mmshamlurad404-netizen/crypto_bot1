@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { calculateRSI, calculateVolatility, computeIndicators } from "../src/indicators.js";
+import { calculateRSI, calculateVolatility, computeIndicators, calculateSMA, calculateEMA } from "../src/indicators.js";
 
 test("RSI returns null with insufficient data", () => {
   assert.equal(calculateRSI([100, 101], 14), null);
@@ -46,4 +46,23 @@ test("volatility scales with price swings", () => {
 test("computeIndicators returns price", () => {
   const res = computeIndicators([100, 101, 102], 14);
   assert.equal(res.price, 102);
+});
+
+test("SMA is the mean of the trailing window", () => {
+  assert.equal(calculateSMA([1, 2, 3, 4], 4), 2.5);
+  assert.equal(calculateSMA([1, 2, 3, 4, 5, 6], 3), 5, "uses only the last `period` values");
+  assert.equal(calculateSMA([1, 2], 3), null, "insufficient data");
+});
+
+test("EMA smooths with exponential weighting", () => {
+  const closes = Array.from({ length: 20 }, (_, i) => 100 + i);
+  const sma = calculateSMA(closes, 10)!;
+  const ema = calculateEMA(closes, 10)!;
+  assert.notEqual(ema, sma);
+  const flat = Array.from({ length: 20 }, () => 100);
+  assert.equal(calculateEMA(flat, 10), 100);
+  assert.equal(calculateEMA([1, 2], 3), null, "insufficient data");
+  const rising = Array.from({ length: 30 }, (_, i) => 50 + i);
+  const fallback = calculateEMA(rising, 5)!;
+  assert.ok(fallback > 0);
 });

@@ -102,12 +102,12 @@ export class RiskManager {
     return this.now() - last < this.config.cooldownMinutes * 60 * 1000;
   }
 
-  evaluateBuy(pair: SymbolPair, orderValueInQuote: number, volatility: number | null, rsi: number | null): RiskVerdict {
-    return this.gates(pair, orderValueInQuote, volatility, rsi, false);
+  evaluateBuy(pair: SymbolPair, orderValueInQuote: number, volatility: number | null, rsi: number | null, options: { skipRsiGate?: boolean } = {}): RiskVerdict {
+    return this.gates(pair, orderValueInQuote, volatility, rsi, false, options.skipRsiGate ?? false);
   }
 
   evaluateDca(pair: SymbolPair, orderValueInQuote: number, volatility: number | null, rsi: number | null): RiskVerdict {
-    return this.gates(pair, orderValueInQuote, volatility, rsi, true);
+    return this.gates(pair, orderValueInQuote, volatility, rsi, true, false);
   }
 
   private gates(
@@ -115,7 +115,8 @@ export class RiskManager {
     orderValueInQuote: number,
     volatility: number | null,
     rsi: number | null,
-    skipOpenPosition: boolean
+    skipOpenPosition: boolean,
+    skipRsiGate: boolean
   ): RiskVerdict {
     const equity = this.portfolio.equity();
     const state = this.portfolio.state();
@@ -178,7 +179,7 @@ export class RiskManager {
       return { allowed: false, reason: msg, halted: false, sizePct: 0 };
     }
 
-    if (rsi !== null && rsi > this.config.rsiEntryUpper) {
+    if (!skipRsiGate && rsi !== null && rsi > this.config.rsiEntryUpper) {
       const msg = `RSI ${rsi.toFixed(1)} above entry ceiling ${this.config.rsiEntryUpper}`;
       return { allowed: false, reason: msg, halted: false, sizePct: 0 };
     }

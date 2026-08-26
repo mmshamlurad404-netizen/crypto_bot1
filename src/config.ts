@@ -2,6 +2,7 @@ import "dotenv/config";
 import { z } from "zod";
 import { SymbolPair, QuoteCurrency } from "./types.js";
 import { TriggerRule } from "./triggers/engine.js";
+import { parseStrategyPools, StrategySpec } from "./config/pools.js";
 
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
@@ -55,6 +56,8 @@ const envSchema = z.object({
   DCA_LEVELS: z.string().default("[]"),
 
   TRIGGERS: z.string().default("[]"),
+
+  STRATEGY_POOLS: z.string().default("{}"),
 
   TELEGRAM_BOT_TOKEN: z.string().default(""),
   TELEGRAM_CHAT_ID: z.string().default(""),
@@ -112,6 +115,7 @@ export interface BotConfig {
   dcaLevels: DcaLevel[];
   dcaMaxOrdersPerPosition: number;
   triggers: TriggerRule[];
+  strategyPools: Record<string, StrategySpec>;
   telegramBotToken: string;
   telegramChatId: string;
   dailyReportTime: string;
@@ -198,10 +202,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
   const halfLife = parsed.SENTIMENT_HALF_LIFE_HOURS;
   const dcaLevels = parseDcaLevels(parsed.DCA_LEVELS);
   const triggers = parseTriggers(parsed.TRIGGERS);
+  const strategyPools = parseStrategyPools(parsed.STRATEGY_POOLS);
   const symbolKeys = new Set(symbols.map((s) => s.key));
   for (const rule of triggers) {
     if (!symbolKeys.has(rule.symbol)) {
       throw new Error(`TRIGGERS rule "${rule.id}" references symbol "${rule.symbol}" which is not in SYMBOLS`);
+    }
+  }
+  for (const symbol of Object.keys(strategyPools)) {
+    if (!symbolKeys.has(symbol)) {
+      throw new Error(`STRATEGY_POOLS references symbol "${symbol}" which is not in SYMBOLS`);
     }
   }
   return {
@@ -248,6 +258,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     dcaLevels,
     dcaMaxOrdersPerPosition: parsed.DCA_MAX_ORDERS_PER_POSITION,
     triggers,
+    strategyPools,
     telegramBotToken: parsed.TELEGRAM_BOT_TOKEN.trim(),
     telegramChatId: parsed.TELEGRAM_CHAT_ID.trim(),
     dailyReportTime: parsed.DAILY_REPORT_TIME,

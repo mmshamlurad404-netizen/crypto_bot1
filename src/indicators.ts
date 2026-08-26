@@ -50,3 +50,19 @@ export function computeIndicators(closes: number[], rsiPeriod: number, volLookba
     price: closes.length > 0 ? closes[closes.length - 1]! : null,
   };
 }
+
+export function calculateSMA(closes: number[], period: number): number | null {
+  if (closes.length < period || period <= 0) return null;
+  const window = closes.slice(closes.length - period);
+  return window.reduce((a, b) => a + b, 0) / period;
+}
+
+export function calculateEMA(closes: number[], period: number): number | null {
+  if (closes.length < period || period <= 0) return null;
+  const k = 2 / (period + 1);
+  let ema = closes.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  for (let i = period; i < closes.length; i++) {
+    ema = closes[i]! * k + ema * (1 - k);
+  }
+  return ema;
+}

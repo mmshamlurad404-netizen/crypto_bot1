@@ -42,11 +42,14 @@ Basis: `.context/gap-analysis.md` priority ranking. Scope = on-prem, Nobitex-onl
 
 ## Phase 2 — Generalize strategy & signal intake
 
-### P2-1 Strategy DSL + config pools
-- `src/strategy/dsl.ts`: declarative strategy schema (JSON): entry/exit composed of indicator nodes (RSI, volatility, price vs MA, sentiment) with and/or combinators; compile to `evaluate`-compatible object.
-- Add MA (SMA/EMA) indicators to `src/indicators.ts` (needed by DSL and backtester realism).
-- `src/config/pools.ts`: multiple named configs; assign per-symbol or schedule rotation (mimics Config Pools).
-- Keep existing hybrid as the default compiled strategy so behavior is unchanged until user opts in.
+### P2-1 Strategy DSL + config pools — DONE (2026-08-26)
+- `src/strategy/dsl.ts`: declarative `DslStrategy` — zod-validated `DslJson` (`warmupSamples`, `entry`, `exit` condition trees); nodes: `rsi_lt/gt`, `volatility_lt/gt`, `sentiment_lt/gt`, `price_gt_ma/price_lt_ma` (`sma|ema` × period), `and`/`or`/`not`; exit tree evaluated while holding, fixed stop-loss/trailing/take-profit always supersede. Warmup = `max(rsiPeriod+5, maxMaPeriod+1, warmupSamples)`.
+- `src/indicators.ts`: `calculateSMA`/`calculateEMA` (null on insufficient data; EMA seeds from SMA of first `period`).
+- `src/config/pools.ts`: `parseStrategyPools` (`symbol -> "hybrid"|DSL`) + `buildStrategyPool` returning `Map<string, StrategyLike>`; hybrid instance shared when no DSL override.
+- Config: `STRATEGY_POOLS` env (default `"{}"`), `BotConfig.strategyPools`, cross-validated against `SYMBOLS`.
+- `src/index.ts` + `src/backtest/engine.ts`: decisions/backtest replay resolve strategy via the pool (same code path as live).
+- Risk: `evaluateBuy(..., {skipRsiGate})` — DSL entries bypass the hybrid RSI ceiling (trend entries must not be blocked by high RSI); hybrid unchanged.
+- Tests `tests/dsl.test.ts` (13: node semantics, warmup, entry/exit, price>MA trend entry, no-rule hold, pool parse/validation/assignment); suite 80/80, typecheck + build clean.
 
 ### P2-2 TradingView webhook endpoint
 - `src/sentiment/server.ts`: add `POST /api/v1/tradingview` (Bearer auth) accepting TradingView alert payloads; map alert message/`{{strategy.order.action}}` → BUY/SELL intent that flows through normal risk gates.

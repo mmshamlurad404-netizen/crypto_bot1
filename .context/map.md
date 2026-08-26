@@ -1,5 +1,5 @@
 # Project Map — nobitex-sentiment-bot
-Updated: 2026-08-25
+Updated: 2026-08-26
 
 ## Shape
 ```
@@ -15,12 +15,13 @@ Updated: 2026-08-25
 │   ├── report/             # Performance analytics from audit DB (P1-2)
 │   ├── risk/               # Limit gates, volatility sizing, daily-loss halt, trailing stops
 │   ├── sentiment/          # HTTP webhook + JSONL feed + aggregation engine
-│   ├── strategy/           # Hybrid RSI + sentiment entry/exit rules + DCA ladder (P1-4)
+│   ├── strategy/           # Hybrid RSI + sentiment entry/exit + DSL strategies + DCA ladder (P1-4, P2-1)
+│   ├── config/             # Strategy pool parsing + per-symbol build (P2-1)
 │   ├── triggers/           # Declarative rule DSL: condition -> notify/halt (P1-5)
 │   ├── index.ts            # Orchestrator: poll loop, execution, scheduling
 │   ├── config.ts           # Zod-validated env config
 │   ├── db.ts               # SQLite audit store (better-sqlite3)
-│   ├── indicators.ts       # Wilder RSI + log-return volatility
+│   ├── indicators.ts       # Wilder RSI + log-return volatility + SMA/EMA
 │   ├── logger.ts           # Pino factory
 │   └── types.ts            # Shared domain types
 ├── scripts/                # curl helper to feed sentiment webhook
@@ -41,15 +42,17 @@ src/config.ts — zod env schema → typed BotConfig; SYMBOLS parsing and valida
 src/types.ts — shared domain types (SymbolPair, SignalDecision, Position, OrderRecord...)
 src/db.ts — AuditDb: 9 tables, indexes, all insert/query methods, migrations on open
 src/logger.ts — pino logger, pino-pretty transport at debug/trace
-src/indicators.ts — RSI (Wilder smoothing), volatility (60-bar log returns)
+src/indicators.ts — RSI (Wilder smoothing), volatility (60-bar log returns), SMA/EMA (null on insufficient data)
+src/config/pools.ts — parseStrategyPools (symbol -> "hybrid"|DSL) + buildStrategyPool -> Map<symbol, StrategyLike>; hybrid instance shared when no DSL override
 src/exchange/nobitex.ts — REST client: stats, trades, wallets, addOrder/status/cancel; per-path public throttle
 src/market/priceFeed.ts — in-memory PricePoint series, seed from recent trades, poll stats
 src/sentiment/engine.ts — confidence × time-decay weighted sentiment score
 src/sentiment/server.ts — HTTP server: /healthz, POST /api/v1/sentiment, JSONL file poller
 src/strategy/hybrid.ts — evaluate(): warmup gate, exits, then sentiment+RSI entry with risk veto
+src/strategy/dsl.ts — DslStrategy: zod-validated entry/exit condition trees (rsi/volatility/sentiment/price vs SMA|EMA, and/or/not); same risk gates + DCA; DSL entries skip hybrid RSI ceiling
 src/strategy/dca.ts — DcaLadder: sorted {belowPct,buyPct} levels consumed in order per position; consumed only after risk approval; maxOrders cap
 src/triggers/engine.ts — TriggerEngine: edge-triggered rules (rsi/price/sentiment below/above) -> notify/halt; per-symbol evaluation before strategy
-src/risk/manager.ts — evaluateBuy gate chain, volatility sizing, stop-loss/take-profit, trailing stops, evaluateDca (skips open-position gate), halt state
+src/risk/manager.ts — evaluateBuy gate chain, volatility sizing, stop-loss/take-profit, trailing stops, evaluateDca (skips open-position gate), halt state; evaluateBuy accepts {skipRsiGate} for DSL entries
 src/portfolio/manager.ts — dry-run virtual holdings vs live wallets; applyTrade PnL accounting
 src/execution/executor.ts — fills at best bid/ask, dry-run simulation or live addOrder, fee calc
 src/alerts/telegram.ts — sendMessage with HTML, logs every alert to DB
@@ -66,6 +69,7 @@ tests/metrics.test.ts — analytics over synthetic positions/snapshots/trades
 tests/risk.test.ts — risk gate order and halt behavior
 tests/dca.test.ts — DCA ladder order/caps, evaluateDca gate skip, strategy emit/consume/merge, orders.kind migration
 tests/triggers.test.ts — trigger edge firing/re-arm, condition types, config validation, halt wiring
+tests/dsl.test.ts — DSL node semantics, warmup, entry/exit, trend entry, pool parse/validation/assignment, config rejection
 tests/strategy.test.ts — hybrid strategy buy/hold/sell paths
 tests/sentiment.test.ts — sentiment aggregation behavior
 .env.example — documented env contract; copy to .env
@@ -118,7 +122,7 @@ src/db.ts:290 snapshotsBetween — equity/positions_value series by ts range (dr
 1. Sentiment: scripts/feed_sentiment.sh (or external pipeline) → POST :3001/api/v1/sentiment → src/sentiment/server.ts:handle → engine.ingest → sentiment_events table
 2. Prices: src/market/priceFeed.ts poll() → GET /market/stats → in-memory series → indicators.ts (RSI, volatility)
 3. Triggers: src/triggers/engine.ts evaluate() per symbol in tick (rsi/price/sentiment) → risk_events(kind=trigger) + notify (alerts table) / halt (risk manager)
-4. Decision: strategy/hybrid.ts evaluate() → risk/manager.ts evaluateBuy/evaluateDca veto → signals table (every decision logged)
+4. Decision: strategy resolved per symbol via config/pools.ts buildStrategyPool (hybrid default, DSL override) → strategy/*.ts evaluate() → risk/manager.ts evaluateBuy/evaluateDca veto → signals table (every decision logged)
 5. Execution: executor.ts execute() → orders + trades tables → portfolio.applyTrade() → positions table + meta `day:YYYY-MM-DD:realized_pnl`
 6. Notify: TelegramNotifier.send() → alerts table → api.telegram.org sendMessage
 7. Report: DailyReporter.generateReport() → portfolio_snapshots table + meta prev_day_equity (read back by RiskManager)
@@ -142,6 +146,9 @@ src/db.ts:290 snapshotsBetween — equity/positions_value series by ts range (dr
 - CSV export formats large rial values as integers (FP-noise epsilon 1e-4); amounts keep up to 8 decimals
 - Trailing stop/TP default OFF (0); trailing state is in-memory (Map keyed by positionId), resets on restart — same caveat as risk halt state
 - Strategy exit order: fixed stop-loss (floor) → trailing stop/TP → fixed take-profit (skipped while trailing TP armed); keep TRAILING_TP_ACTIVATE_PCT <= TAKE_PROFIT_PCT for trailing TP to take effect
+- DslStrategy exit order (holding): fixed stop-loss → trailing → take-profit → DSL exit tree → DCA; DSL entry rule gates buys but fixed stop/trailing/take-profit always apply; warmup = max(rsiPeriod+5, maxMaPeriod+1, warmupSamples)
+- DSL entries skip the hybrid RSI-entry ceiling (RSI < RSI_ENTRY_UPPER) because the DSL's own entry tree encodes timing; volatility/exposure/cooldown/trade-cap gates still apply — RSI ceiling only guards the default hybrid entry
+- STRATEGY_POOLS is a JSON object symbol -> "hybrid"|DSL; symbols not listed get the shared hybrid instance; pool symbols are validated against SYMBOLS at startup; backtester replays the pool assignment for the symbol under test
 - DCA: levels sorted by belowPct; consumed one per tick in order (gap-downs don't skip levels); level consumed only after risk approval — blocked levels stay pending; stop-loss fires before a deep DCA level unless STOP_LOSS_PCT exceeds the level depth
 - DCA fills pass normal risk gates minus the open-position gate; cooldown/trade-cap still apply, so consecutive fills are throttled by COOLDOWN_MINUTES
 - Trigger rules are edge-triggered and in-memory (reset on restart); halt persists for the process lifetime; trigger inputs (rsi/price/sentiment) are recomputed per symbol in tick before the strategy runs
