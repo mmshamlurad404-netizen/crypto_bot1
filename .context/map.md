@@ -40,14 +40,14 @@ build: `tsc -p tsconfig.json` → dist/ | test: `tsx --test tests/*.test.ts` | r
 src/index.ts — composition root; wiring, poll loop, signal logging, signal handlers
 src/config.ts — zod env schema → typed BotConfig; SYMBOLS parsing and validation
 src/types.ts — shared domain types (SymbolPair, SignalDecision, Position, OrderRecord...)
-src/db.ts — AuditDb: 9 tables, indexes, all insert/query methods, migrations on open
+src/db.ts — AuditDb: 10 tables, indexes, all insert/query methods, migrations on open
 src/logger.ts — pino logger, pino-pretty transport at debug/trace
 src/indicators.ts — RSI (Wilder smoothing), volatility (60-bar log returns), SMA/EMA (null on insufficient data)
 src/config/pools.ts — parseStrategyPools (symbol -> "hybrid"|DSL) + buildStrategyPool -> Map<symbol, StrategyLike>; hybrid instance shared when no DSL override
 src/exchange/nobitex.ts — REST client: stats, trades, wallets, addOrder/status/cancel; per-path public throttle
 src/market/priceFeed.ts — in-memory PricePoint series, seed from recent trades, poll stats
 src/sentiment/engine.ts — confidence × time-decay weighted sentiment score
-src/sentiment/server.ts — HTTP server: /healthz, POST /api/v1/sentiment, JSONL file poller
+src/sentiment/server.ts — HTTP server: /healthz, POST /api/v1/sentiment, POST /api/v1/tradingview (Bearer auth), TradingViewSignals FIFO store + parseTradingViewAlert, JSONL file poller
 src/strategy/hybrid.ts — evaluate(): warmup gate, exits, then sentiment+RSI entry with risk veto
 src/strategy/dsl.ts — DslStrategy: zod-validated entry/exit condition trees (rsi/volatility/sentiment/price vs SMA|EMA, and/or/not); same risk gates + DCA; DSL entries skip hybrid RSI ceiling
 src/strategy/dca.ts — DcaLadder: sorted {belowPct,buyPct} levels consumed in order per position; consumed only after risk approval; maxOrders cap
@@ -70,6 +70,7 @@ tests/risk.test.ts — risk gate order and halt behavior
 tests/dca.test.ts — DCA ladder order/caps, evaluateDca gate skip, strategy emit/consume/merge, orders.kind migration
 tests/triggers.test.ts — trigger edge firing/re-arm, condition types, config validation, halt wiring
 tests/dsl.test.ts — DSL node semantics, warmup, entry/exit, trend entry, pool parse/validation/assignment, config rejection
+tests/tradingview.test.ts — TradingView alert parse (action/ticker/hold/reject), FIFO store, HTTP endpoint enqueue+persist, auth/disabled/symbol errors
 tests/strategy.test.ts — hybrid strategy buy/hold/sell paths
 tests/sentiment.test.ts — sentiment aggregation behavior
 .env.example — documented env contract; copy to .env
@@ -82,7 +83,7 @@ src/index.ts:92 executeDecision — maps BUY/SELL decision to executor + trade a
 src/index.ts:16 scheduleDaily — computes delay to HH:MM and starts daily reporter interval
 src/config.ts:5 envSchema — zod schema; every runtime knob validated with defaults
 src/config.ts:97 parseSymbols — parses "btc/rls" pairs, dedupes, requires one pair in quote currency
-src/db.ts:35 migrate — creates signals/orders/trades/positions/risk_events/sentiment_events/portfolio_snapshots/alerts/meta
+src/db.ts:35 migrate — creates signals/orders/trades/positions/risk_events/sentiment_events/tradingview_signals/portfolio_snapshots/alerts/meta
 src/db.ts:152 insertSignal — audit row for every decision (incl. HOLD/blocked)
 src/db.ts:172 insertOrder — orders row incl. kind (entry|dca|exit, default 'entry'); ALTER TABLE migration adds kind to legacy DBs
 src/db.ts:257 closePosition — closes position, records realized PnL and exit reason
@@ -94,6 +95,11 @@ src/sentiment/engine.ts:41 ingest — clamps sentiment/confidence to ±1, persis
 src/sentiment/engine.ts:73 snapshot — weighted score = Σ(confidence·decay·value)/Σ(confidence·decay)
 src/sentiment/server.ts:56 handle — Bearer-auth POST /api/v1/sentiment, accepts single or array
 src/sentiment/server.ts:104 pollFeed — re-reads JSONL only when mtime changes
+src/sentiment/server.ts:147 handleTradingView — Bearer-auth POST /api/v1/tradingview; 404 when TRADINGVIEW_ENABLED off; parse -> enqueue + persist
+src/sentiment/server.ts:33 TradingViewSignals.enqueue — bounded (200) per-symbol FIFO of pending TradingViewIntent
+src/sentiment/server.ts:87 parseTradingViewAlert — maps action/strategy.order.action + symbol/ticker; returns {intent,error}
+src/index.ts:173 processTradingViewIntent — drains one intent/symbol/tick: BUY -> risk.evaluateBuy(skipRsiGate), SELL -> needs open position; routes via executeDecision
+src/index.ts:210 tradingViewSignals.shift — called per pair after the strategy decision in tick
 src/strategy/hybrid.ts:41 evaluate — decision tree: warmup → SL/TP → sentiment-exit → overbought → entry
 src/risk/manager.ts:83 evaluateBuy — sequential gates: halted, open position, cooldown, volatility, min value, exposure, position size, daily loss, trade count, RSI
 src/risk/manager.ts:44 sizeByVolatility — scales size by benchmark/volatility ratio, capped
@@ -122,6 +128,7 @@ src/db.ts:290 snapshotsBetween — equity/positions_value series by ts range (dr
 1. Sentiment: scripts/feed_sentiment.sh (or external pipeline) → POST :3001/api/v1/sentiment → src/sentiment/server.ts:handle → engine.ingest → sentiment_events table
 2. Prices: src/market/priceFeed.ts poll() → GET /market/stats → in-memory series → indicators.ts (RSI, volatility)
 3. Triggers: src/triggers/engine.ts evaluate() per symbol in tick (rsi/price/sentiment) → risk_events(kind=trigger) + notify (alerts table) / halt (risk manager)
+3b. TradingView: POST /api/v1/tradingview → parseTradingViewAlert → TradingViewSignals FIFO → per-symbol drain in tick → processTradingViewIntent → risk veto → executeDecision; alerts in tradingview_signals table
 4. Decision: strategy resolved per symbol via config/pools.ts buildStrategyPool (hybrid default, DSL override) → strategy/*.ts evaluate() → risk/manager.ts evaluateBuy/evaluateDca veto → signals table (every decision logged)
 5. Execution: executor.ts execute() → orders + trades tables → portfolio.applyTrade() → positions table + meta `day:YYYY-MM-DD:realized_pnl`
 6. Notify: TelegramNotifier.send() → alerts table → api.telegram.org sendMessage
@@ -152,3 +159,4 @@ src/db.ts:290 snapshotsBetween — equity/positions_value series by ts range (dr
 - DCA: levels sorted by belowPct; consumed one per tick in order (gap-downs don't skip levels); level consumed only after risk approval — blocked levels stay pending; stop-loss fires before a deep DCA level unless STOP_LOSS_PCT exceeds the level depth
 - DCA fills pass normal risk gates minus the open-position gate; cooldown/trade-cap still apply, so consecutive fills are throttled by COOLDOWN_MINUTES
 - Trigger rules are edge-triggered and in-memory (reset on restart); halt persists for the process lifetime; trigger inputs (rsi/price/sentiment) are recomputed per symbol in tick before the strategy runs
+- TradingView intents are consumed asynchronously one per symbol per tick (bounded FIFO, cap 200); BUY skips only the RSI-entry ceiling, SELL needs an open position; TRADINGVIEW_ENABLED defaults false and the endpoint 404s when off; alerts persist in tradingview_signals

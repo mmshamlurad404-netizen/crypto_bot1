@@ -4,7 +4,7 @@ import { AuditDb } from "./db.js";
 import { NobitexClient } from "./exchange/nobitex.js";
 import { PriceFeed } from "./market/priceFeed.js";
 import { SentimentEngine } from "./sentiment/engine.js";
-import { SentimentWebhook } from "./sentiment/server.js";
+import { SentimentWebhook, TradingViewSignals, TradingViewIntent } from "./sentiment/server.js";
 import { PortfolioManager } from "./portfolio/manager.js";
 import { RiskManager } from "./risk/manager.js";
 import { Executor } from "./execution/executor.js";
@@ -14,7 +14,7 @@ import { computeIndicators } from "./indicators.js";
 import { buildStrategyPool } from "./config/pools.js";
 import { TelegramNotifier } from "./alerts/telegram.js";
 import { DailyReporter } from "./alerts/report.js";
-import { SignalDecision } from "./types.js";
+import { SignalDecision, SymbolPair } from "./types.js";
 
 async function scheduleDaily(reporter: DailyReporter, time: string): Promise<NodeJS.Timeout> {
   const [h, m] = time.split(":").map(Number);
@@ -43,7 +43,13 @@ function main(): void {
   const client = new NobitexClient(config.nobitexBaseUrl, config.nobitexApiKey);
   const priceFeed = new PriceFeed(client, config.symbols, config.seriesMaxPoints, config.seedSeriesFromTrades);
   const sentimentEngine = new SentimentEngine(db, config.sentimentWindowMs, config.sentimentHalfLifeMs, config.sentimentMinConfidence);
-  const webhook = new SentimentWebhook(sentimentEngine, config.sentimentWebhookToken, config.sentimentWebhookPort, logger, config.sentimentJsonFeed);
+  const tradingViewSignals = new TradingViewSignals();
+  const webhook = new SentimentWebhook(sentimentEngine, config.sentimentWebhookToken, config.sentimentWebhookPort, logger, config.sentimentJsonFeed, {
+    tradingViewEnabled: config.tradingViewEnabled,
+    signals: tradingViewSignals,
+    db,
+    symbols: config.symbols,
+  });
   const portfolio = new PortfolioManager(db, client, priceFeed, config.symbols, config.quoteCurrency, config.dryRun, config.virtualStartEquity);
   const risk = new RiskManager(db, priceFeed, portfolio, {
     maxPositionSizePct: config.maxPositionSizePct,
@@ -113,6 +119,7 @@ function main(): void {
       },
       triggers: triggers.count,
       strategies: config.symbols.map((s) => `${s.key}:${config.strategyPools[s.key] ? config.strategyPools[s.key]!.kind : "hybrid"}`),
+      tradingview: config.tradingViewEnabled ? "ENABLED" : "DISABLED",
     },
     "bot started"
   );
@@ -163,6 +170,96 @@ function main(): void {
     }
   }
 
+  async function processTradingViewIntent(tv: TradingViewIntent, pair: SymbolPair): Promise<void> {
+    const ts = new Date().toISOString();
+    if (tv.action === "BUY") {
+      const price = tv.price ?? priceFeed.getLatestPrice(pair.key);
+      if (!price) {
+        logger.warn({ symbol: pair.key }, "tradingview buy skipped: no market price");
+        return;
+      }
+      const closes = priceFeed.getCloses(pair.key);
+      const { rsi, volatility } = computeIndicators(closes, config.rsiPeriod);
+      const sentiment = sentimentEngine.snapshot(pair.src).score;
+      const sizePct = risk.sizeByVolatility(volatility);
+      const orderValue = portfolio.equity() * (sizePct / 100);
+      const verdict = risk.evaluateBuy(pair, orderValue, volatility, rsi, { skipRsiGate: true });
+      if (!verdict.allowed) {
+        db.insertSignal({
+          ts,
+          symbol: pair.key,
+          action: "HOLD",
+          rsi,
+          sentiment,
+          price,
+          seriesLen: closes.length,
+          reason: `tradingview blocked: ${verdict.reason}`,
+          details: null,
+        });
+        logger.info({ symbol: pair.key, reason: verdict.reason }, "tradingview buy blocked by risk");
+        return;
+      }
+      const decision: SignalDecision = {
+        symbol: pair.key,
+        action: "BUY",
+        rsi,
+        sentiment,
+        price,
+        reason: `tradingview signal (${verdict.reason ?? "risk approved"})`,
+        sizePct: verdict.sizePct || sizePct,
+      };
+      db.insertSignal({
+        ts,
+        symbol: pair.key,
+        action: decision.action,
+        rsi: decision.rsi,
+        sentiment: decision.sentiment,
+        price: decision.price,
+        seriesLen: priceFeed.getSeries(pair.key).length,
+        reason: decision.reason,
+        details: "source: tradingview",
+      });
+      await executeDecision(decision);
+    } else {
+      const pos = db.getOpenPosition(pair.key);
+      if (!pos) {
+        db.insertSignal({
+          ts,
+          symbol: pair.key,
+          action: "HOLD",
+          rsi: null,
+          sentiment: null,
+          price: tv.price ?? priceFeed.getLatestPrice(pair.key),
+          seriesLen: priceFeed.getSeries(pair.key).length,
+          reason: "tradingview sell ignored: no open position",
+          details: "source: tradingview",
+        });
+        logger.info({ symbol: pair.key }, "tradingview sell ignored: no open position");
+        return;
+      }
+      const decision: SignalDecision = {
+        symbol: pair.key,
+        action: "SELL",
+        rsi: null,
+        sentiment: null,
+        price: tv.price ?? priceFeed.getLatestPrice(pair.key),
+        reason: "tradingview signal",
+      };
+      db.insertSignal({
+        ts,
+        symbol: pair.key,
+        action: decision.action,
+        rsi: null,
+        sentiment: null,
+        price: decision.price,
+        seriesLen: priceFeed.getSeries(pair.key).length,
+        reason: decision.reason,
+        details: "source: tradingview",
+      });
+      await executeDecision(decision);
+    }
+  }
+
   async function tick(): Promise<void> {
     if (!running) return;
     try {
@@ -205,6 +302,10 @@ function main(): void {
           await executeDecision(decision);
         } else {
           logger.debug({ symbol: decision.symbol, reason: decision.reason }, "HOLD");
+        }
+        const tvIntent = tradingViewSignals.shift(pair.key);
+        if (tvIntent) {
+          await processTradingViewIntent(tvIntent, pair);
         }
       }
       logger.debug(

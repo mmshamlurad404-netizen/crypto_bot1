@@ -190,6 +190,34 @@ from the risk config always apply on top. Example:
 
 The backtester replays the pool assignment for the symbol under test.
 
+## TradingView webhook
+
+When `TRADINGVIEW_ENABLED=true`, `POST /api/v1/tradingview` (same Bearer token
+as the sentiment webhook) accepts TradingView alert payloads. The alert's
+action is mapped to a BUY/SELL intent that is processed on the next poll
+**through the normal risk gates** (halted, cooldown, volatility, exposure,
+trade cap, min value) and then executed or logged like any strategy decision.
+Pending intents are held per symbol in a bounded FIFO and drained one per tick.
+
+```json
+{
+  "ticker": "BINANCE:BTCRLS",
+  "close": 300000000,
+  "strategy": { "order": { "action": "buy" } }
+}
+```
+
+- `symbol` (e.g. `"btc/rls"`) is matched directly; otherwise `ticker` is
+  matched by stripping the exchange prefix and comparing `src+dst`
+  (`BINANCE:BTCRLS` -> `btc/rls`).
+- `action` / `strategy.order.action`: `buy|long|entry` -> BUY,
+  `sell|short|close|exit` -> SELL, `hold|none` -> recorded no-op.
+- `close` is used as the price hint when present (falls back to the live feed).
+- Every alert is persisted to `tradingview_signals`; blocked intents are logged
+  to `signals` with the blocking reason.
+
+Sample client: `scripts/feed_tradingview.sh`. Disabled endpoints return 404.
+
 ## Security
 
 - The API key is read from the environment (`NOBITEX_API_KEY`) and sent only as
@@ -211,6 +239,7 @@ Tables in `audit.db`:
 - `positions` – open/close lifecycle with entry, exit price and realized PnL
 - `risk_events` – every blocked order / halt with the reason
 - `sentiment_events` – every ingested sentiment sample
+- `tradingview_signals` – every ingested TradingView alert
 - `portfolio_snapshots` – equity/cash/positions history (each daily report)
 - `alerts` – alert delivery log
 

@@ -51,9 +51,13 @@ Basis: `.context/gap-analysis.md` priority ranking. Scope = on-prem, Nobitex-onl
 - Risk: `evaluateBuy(..., {skipRsiGate})` — DSL entries bypass the hybrid RSI ceiling (trend entries must not be blocked by high RSI); hybrid unchanged.
 - Tests `tests/dsl.test.ts` (13: node semantics, warmup, entry/exit, price>MA trend entry, no-rule hold, pool parse/validation/assignment); suite 80/80, typecheck + build clean.
 
-### P2-2 TradingView webhook endpoint
-- `src/sentiment/server.ts`: add `POST /api/v1/tradingview` (Bearer auth) accepting TradingView alert payloads; map alert message/`{{strategy.order.action}}` → BUY/SELL intent that flows through normal risk gates.
-- Document webhook URL/format in README; sample script `scripts/feed_tradingview.sh`.
+### P2-2 TradingView webhook endpoint — DONE (2026-08-26)
+- `src/sentiment/server.ts`: `POST /api/v1/tradingview` (Bearer auth, same token as sentiment) — parses TradingView alert JSON; maps `strategy.order.action`/`action` (`buy|long|entry` -> BUY, `sell|short|close|exit` -> SELL, `hold|none` -> no-op) and resolves the symbol from an explicit `symbol` key or a `ticker` (`BINANCE:BTCRLS` -> `btc/rls`); `close` used as a price hint.
+- `src/sentiment/server.ts`: `TradingViewSignals` bounded FIFO store (per symbol, cap 200); endpoint enqueues intents and persists raw alerts to a new `tradingview_signals` table.
+- `src/index.ts`: `processTradingViewIntent` drains one pending intent per symbol per tick after the strategy decision — BUY runs `risk.evaluateBuy(..., {skipRsiGate:true})` (halted/cooldown/volatility/exposure/trade-cap/min-value gates; no RSI ceiling for explicit alerts), SELL requires an open position; decisions flow through the shared `executeDecision` path and every intent (incl. blocked/ignored) is recorded in `signals`.
+- Config: `TRADINGVIEW_ENABLED` (default false, opt-in; endpoint 404s when off) — no new token/port env (reuses `SENTIMENT_WEBHOOK_TOKEN`/port).
+- Docs: `.env.example` + README section + `scripts/feed_tradingview.sh`.
+- Tests `tests/tradingview.test.ts` (9: parse mapping buy/sell/ticker, hold no-op, rejections, FIFO store, HTTP endpoint enqueue+persist, auth 401, disabled 404, unknown symbol 400); suite 89/89, typecheck + build clean.
 
 ### P2-3 Signals framework
 - `src/signals/`: generic subscriber model (source: sentiment feed, TradingView, manual API, scheduled) each yielding a `SignalIntent`; strategy consumes unified intents. Refactor sentiment into a subscriber.

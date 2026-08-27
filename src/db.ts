@@ -132,6 +132,16 @@ export class AuditDb {
         message TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS tradingview_signals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT NOT NULL,
+        symbol TEXT NOT NULL,
+        action TEXT NOT NULL,
+        price REAL,
+        ticker TEXT,
+        raw TEXT
+      );
+
       CREATE INDEX IF NOT EXISTS idx_signals_ts ON signals(ts);
       CREATE INDEX IF NOT EXISTS idx_orders_ts ON orders(ts);
       CREATE INDEX IF NOT EXISTS idx_trades_ts ON trades(ts);
@@ -140,6 +150,7 @@ export class AuditDb {
       CREATE INDEX IF NOT EXISTS idx_risk_ts ON risk_events(ts);
       CREATE INDEX IF NOT EXISTS idx_sentiment_ts ON sentiment_events(ts);
       CREATE INDEX IF NOT EXISTS idx_snapshots_ts ON portfolio_snapshots(ts);
+      CREATE INDEX IF NOT EXISTS idx_tradingview_ts ON tradingview_signals(ts);
     `);
     this.migrateOrderKind();
   }
@@ -167,6 +178,18 @@ export class AuditDb {
       )
       .run(signal.ts, signal.symbol, signal.action, signal.rsi, signal.sentiment, signal.price, signal.seriesLen, signal.reason, signal.details);
     return Number(res.lastInsertRowid);
+  }
+
+  insertTradingViewSignal(row: { ts: string; symbol: string; action: string; price: number | null; ticker: string | null; raw: string | null }): number {
+    const res = this.db
+      .prepare("INSERT INTO tradingview_signals (ts, symbol, action, price, ticker, raw) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(row.ts, row.symbol, row.action, row.price, row.ticker, row.raw);
+    return Number(res.lastInsertRowid);
+  }
+
+  countTradingViewSignals(): number {
+    const row = this.db.prepare("SELECT COUNT(*) AS n FROM tradingview_signals").get() as { n: number } | undefined;
+    return Number(row?.n ?? 0);
   }
 
   insertOrder(order: {

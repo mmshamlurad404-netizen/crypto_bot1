@@ -28,6 +28,7 @@ const envSchema = z.object({
   SENTIMENT_WEBHOOK_PORT: z.coerce.number().int().positive().default(3001),
   SENTIMENT_WEBHOOK_TOKEN: z.string().default("changeme"),
   SENTIMENT_JSON_FEED: z.string().default(""),
+  TRADINGVIEW_ENABLED: z.coerce.boolean().default(false),
 
   PRICE_POLL_SECONDS: z.coerce.number().int().min(5).default(60),
   SERIES_MAX_POINTS: z.coerce.number().int().positive().default(500),
@@ -91,6 +92,7 @@ export interface BotConfig {
   sentimentWebhookPort: number;
   sentimentWebhookToken: string;
   sentimentJsonFeed: string;
+  tradingViewEnabled: boolean;
   pricePollMs: number;
   seriesMaxPoints: number;
   seedSeriesFromTrades: boolean;
@@ -234,6 +236,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     sentimentWebhookPort: parsed.SENTIMENT_WEBHOOK_PORT,
     sentimentWebhookToken: parsed.SENTIMENT_WEBHOOK_TOKEN,
     sentimentJsonFeed: parsed.SENTIMENT_JSON_FEED,
+    tradingViewEnabled: parsed.TRADINGVIEW_ENABLED,
     pricePollMs: parsed.PRICE_POLL_SECONDS * 1000,
     seriesMaxPoints: parsed.SERIES_MAX_POINTS,
     seedSeriesFromTrades: parsed.SEED_SERIES_FROM_TRADES,
