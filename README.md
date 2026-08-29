@@ -213,6 +213,25 @@ The webhook server (`/api/v1/sentiment`, `/api/v1/tradingview`) is one source
 of intents; the API surface is unchanged. `SignalBroker.stats()` reports
 submitted/rejected counts for observability.
 
+## Multi-bot orchestration
+
+Set `BOTS_JSON` to run several independent bots in **one process** (the Bulk
+Bot Manager analogue). Each entry is an env-override object merged over the
+base `.env`, so every knob can differ per bot:
+
+```json
+[
+  {"BOT_NAME":"btc-bot","SYMBOLS":"btc/rls","DB_PATH":"./data/bot-btc.db","SENTIMENT_WEBHOOK_PORT":3001},
+  {"BOT_NAME":"eth-bot","SYMBOLS":"eth/rls","DB_PATH":"./data/bot-eth.db","SENTIMENT_WEBHOOK_PORT":0}
+]
+```
+
+- Give each bot its own `DB_PATH`; set `SENTIMENT_WEBHOOK_PORT` to `0` to
+  disable that bot's webhook (bots cannot share a port).
+- Each bot gets its own poll loop, risk manager, strategy pool, and audit DB,
+  so one bot cannot affect another's capital or decisions.
+- Unset `BOTS_JSON` keeps the classic single-bot behaviour.
+
 ## TradingView webhook
 
 When `TRADINGVIEW_ENABLED=true`, `POST /api/v1/tradingview` (same Bearer token

@@ -7,6 +7,7 @@ import { parseStrategyPools, StrategySpec } from "./config/pools.js";
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
+  BOT_NAME: z.string().default("default"),
 
   NOBITEX_API_KEY: z.string().default(""),
   NOBITEX_BASE_URL: z.string().url().default("https://apiv2.nobitex.ir"),
@@ -25,7 +26,7 @@ const envSchema = z.object({
   SENTIMENT_WINDOW_HOURS: z.coerce.number().positive().default(24),
   SENTIMENT_HALF_LIFE_HOURS: z.coerce.number().positive().default(12),
   SENTIMENT_MIN_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.1),
-  SENTIMENT_WEBHOOK_PORT: z.coerce.number().int().positive().default(3001),
+  SENTIMENT_WEBHOOK_PORT: z.coerce.number().int().min(0).default(3001),
   SENTIMENT_WEBHOOK_TOKEN: z.string().default("changeme"),
   SENTIMENT_JSON_FEED: z.string().default(""),
   TRADINGVIEW_ENABLED: z.coerce.boolean().default(false),
@@ -73,6 +74,7 @@ export interface DcaLevel {
 }
 
 export interface BotConfig {
+  botName: string;
   nodeEnv: string;
   logLevel: string;
   nobitexApiKey: string;
@@ -217,6 +219,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     }
   }
   return {
+    botName: parsed.BOT_NAME.trim() || "default",
     nodeEnv: parsed.NODE_ENV,
     logLevel: parsed.LOG_LEVEL,
     nobitexApiKey: parsed.NOBITEX_API_KEY.trim(),
@@ -267,4 +270,26 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     dailyReportTime: parsed.DAILY_REPORT_TIME,
     dbPath: parsed.DB_PATH,
   };
+}
+
+export function loadConfigs(env: NodeJS.ProcessEnv = process.env): BotConfig[] {
+  const rawBots = env.BOTS_JSON ?? "";
+  if (!rawBots.trim()) {
+    return [loadConfig(env)];
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawBots);
+  } catch {
+    throw new Error("BOTS_JSON must be a JSON array of env override objects");
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0) {
+    throw new Error("BOTS_JSON must be a non-empty JSON array, e.g. [{\"SYMBOLS\":\"btc/rls\",\"DB_PATH\":\"./data/bot-btc.db\",\"SENTIMENT_WEBHOOK_PORT\":0}]");
+  }
+  return parsed.map((entry, i) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new Error(`BOTS_JSON[${i}] must be an object of env overrides`);
+    }
+    return loadConfig({ ...env, ...(entry as Record<string, string>) });
+  });
 }

@@ -1,4 +1,4 @@
-import { loadConfig } from "./config.js";
+import { loadConfig, loadConfigs, BotConfig } from "./config.js";
 import { createLogger } from "./logger.js";
 import { AuditDb } from "./db.js";
 import { NobitexClient } from "./exchange/nobitex.js";
@@ -16,6 +16,7 @@ import { buildStrategyPool } from "./config/pools.js";
 import { TelegramNotifier } from "./alerts/telegram.js";
 import { DailyReporter } from "./alerts/report.js";
 import { SignalDecision, SymbolPair } from "./types.js";
+import { pino, type Logger } from "pino";
 
 async function scheduleDaily(reporter: DailyReporter, time: string): Promise<NodeJS.Timeout> {
   const [h, m] = time.split(":").map(Number);
@@ -36,10 +37,13 @@ async function scheduleDaily(reporter: DailyReporter, time: string): Promise<Nod
   return timer;
 }
 
-function main(): void {
-  const config = loadConfig();
-  const logger = createLogger(config.logLevel);
+export interface BotRuntime {
+  name: string;
+  stop: () => Promise<void>;
+}
 
+export function startBot(config: BotConfig, baseLogger: Logger): BotRuntime {
+  const logger = baseLogger.child({ bot: config.botName });
   const db = new AuditDb(config.dbPath);
   const client = new NobitexClient(config.nobitexBaseUrl, config.nobitexApiKey);
   const priceFeed = new PriceFeed(client, config.symbols, config.seriesMaxPoints, config.seedSeriesFromTrades);
@@ -53,11 +57,14 @@ function main(): void {
       confidence: intent.confidence,
     })
   );
-  const webhook = new SentimentWebhook(signals, config.sentimentWebhookToken, config.sentimentWebhookPort, logger, config.sentimentJsonFeed, {
-    tradingViewEnabled: config.tradingViewEnabled,
-    db,
-    symbols: config.symbols,
-  });
+  const webhook =
+    config.sentimentWebhookPort > 0
+      ? new SentimentWebhook(signals, config.sentimentWebhookToken, config.sentimentWebhookPort, logger, config.sentimentJsonFeed, {
+          tradingViewEnabled: config.tradingViewEnabled,
+          db,
+          symbols: config.symbols,
+        })
+      : null;
   const portfolio = new PortfolioManager(db, client, priceFeed, config.symbols, config.quoteCurrency, config.dryRun, config.virtualStartEquity);
   const risk = new RiskManager(db, priceFeed, portfolio, {
     maxPositionSizePct: config.maxPositionSizePct,
@@ -105,7 +112,7 @@ function main(): void {
   const notifier = new TelegramNotifier(db, config.telegramBotToken, config.telegramChatId, logger);
   const reporter = new DailyReporter(db, portfolio, priceFeed, sentimentEngine, notifier, config.symbols, logger);
 
-  webhook.start();
+  webhook?.start();
 
   logger.info(
     {
@@ -128,6 +135,7 @@ function main(): void {
       triggers: triggers.count,
       strategies: config.symbols.map((s) => `${s.key}:${config.strategyPools[s.key] ? config.strategyPools[s.key]!.kind : "hybrid"}`),
       tradingview: config.tradingViewEnabled ? "ENABLED" : "DISABLED",
+      webhook: webhook ? `:${config.sentimentWebhookPort}` : "disabled",
     },
     "bot started"
   );
@@ -341,13 +349,28 @@ function main(): void {
   void tick();
   void scheduleDaily(reporter, config.dailyReportTime);
 
+  return {
+    name: config.botName,
+    stop: async () => {
+      if (!running) return;
+      running = false;
+      logger.info("bot stopping");
+      clearInterval(pollTimer);
+      await webhook?.stop();
+      db.close();
+    },
+  };
+}
+
+function main(): void {
+  const configs = loadConfigs();
+  const logger = createLogger(configs[0]!.logLevel);
+  const bots = configs.map((config) => startBot(config, logger));
+  logger.info({ count: bots.length }, "all bots started");
+
   const shutdown = async (signal: string) => {
-    if (!running) return;
-    running = false;
     logger.info({ signal }, "shutting down");
-    clearInterval(pollTimer);
-    await webhook.stop();
-    db.close();
+    await Promise.all(bots.map((b) => b.stop()));
     process.exit(0);
   };
   process.on("SIGINT", () => void shutdown("SIGINT"));

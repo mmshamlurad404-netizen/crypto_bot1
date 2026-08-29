@@ -1,6 +1,5 @@
 # Project Map — nobitex-sentiment-bot
 Updated: 2026-08-26
-
 ## Shape
 ```
 /workspace
@@ -73,6 +72,7 @@ tests/dca.test.ts — DCA ladder order/caps, evaluateDca gate skip, strategy emi
 tests/triggers.test.ts — trigger edge firing/re-arm, condition types, config validation, halt wiring
 tests/signals.test.ts — SignalBroker: sentiment routing+result, rejections, trade FIFO/queue/drain, no-subscriber acceptance
 tests/dsl.test.ts — DSL node semantics, warmup, entry/exit, trend entry, pool parse/validation/assignment, config rejection
+tests/bots.test.ts — loadConfigs: single default, N merged configs, inherited defaults, malformed BOTS_JSON rejections, port-0/BOT_NAME
 tests/tradingview.test.ts — TradingView alert parse (action/ticker/hold/reject), broker enqueue, HTTP endpoint enqueue+persist, auth/disabled/symbol errors, sentiment-through-broker
 tests/strategy.test.ts — hybrid strategy buy/hold/sell paths
 tests/sentiment.test.ts — sentiment aggregation behavior
@@ -80,12 +80,14 @@ tests/sentiment.test.ts — sentiment aggregation behavior
 tsconfig.json — strict ES2022 NodeNext build config
 
 ## Key symbols
-src/index.ts:35 main — composition root; instantiates all services from config
+src/index.ts:35 main — composition root for N bots; starts one bot per config from loadConfigs(); SIGINT/SIGTERM stop all
+src/index.ts:38 startBot — full per-bot object graph + own tick/executeDecision/processTradingViewIntent; returns BotRuntime{name,stop}; webhook conditional on port>0
 src/index.ts:136 tick — core loop: priceFeed.poll → portfolio.refresh → strategy.evaluate → executeDecision
 src/index.ts:92 executeDecision — maps BUY/SELL decision to executor + trade alert; records signals when trading disabled
 src/index.ts:16 scheduleDaily — computes delay to HH:MM and starts daily reporter interval
 src/config.ts:5 envSchema — zod schema; every runtime knob validated with defaults
 src/config.ts:97 parseSymbols — parses "btc/rls" pairs, dedupes, requires one pair in quote currency
+src/config.ts:277 loadConfigs — BOTS_JSON array of env-override objects -> BotConfig[] (single config when unset); each entry merged over base env
 src/db.ts:35 migrate — creates signals/orders/trades/positions/risk_events/sentiment_events/tradingview_signals/portfolio_snapshots/alerts/meta
 src/db.ts:152 insertSignal — audit row for every decision (incl. HOLD/blocked)
 src/db.ts:172 insertOrder — orders row incl. kind (entry|dca|exit, default 'entry'); ALTER TABLE migration adds kind to legacy DBs
@@ -166,3 +168,4 @@ src/db.ts:290 snapshotsBetween — equity/positions_value series by ts range (dr
 - Trigger rules are edge-triggered and in-memory (reset on restart); halt persists for the process lifetime; trigger inputs (rsi/price/sentiment) are recomputed per symbol in tick before the strategy runs
 - TradingView intents are consumed asynchronously one per symbol per tick (bounded FIFO, cap 200); BUY skips only the RSI-entry ceiling, SELL needs an open position; TRADINGVIEW_ENABLED defaults false and the endpoint 404s when off; alerts persist in tradingview_signals
 - SignalBroker is the single ingestion point: all external intents (sentiment/trade) flow through submit(); sentiment aggregation stays in SentimentEngine (the broker's sentiment subscriber); trade intents include source (tradingview|manual|scheduled) for audit
+- Multi-bot: BOTS_JSON entries are env-override objects merged over base env; each bot gets its own DB_PATH/poll loop/risk/strategy pool (isolation); SENTIMENT_WEBHOOK_PORT=0 disables that bot's webhook; bots share only the logger and the process

@@ -67,10 +67,15 @@ Basis: `.context/gap-analysis.md` priority ranking. Scope = on-prem, Nobitex-onl
 
 ## Phase 3 — Stretch (only if earlier phases land clean)
 
-- Short selling via Nobitex margin API (`/v2/margin/...`): new risk model, requires separate config + heavy testing; default OFF.
-- Market making / arbitrage: orderbook depth + maker fills; highest complexity, lowest priority.
-- Multi-bot orchestration: run N configs in one process (Bulk Bot Manager analogue).
-- AI strategy: optional LLM advisor consuming indicators + sentiment, emitting weights (user supplies own key via `USER_LLM_*`, per no-read-llm-env rule).
+### P3-1 Multi-bot orchestration — DONE (2026-08-26)
+- `src/config.ts`: `BOTS_JSON` env (JSON array of env-override objects, merged over base env) + `loadConfigs()` → `BotConfig[]`; single config when unset. `BOT_NAME` env (default `default`); `SENTIMENT_WEBHOOK_PORT` now allows 0 (webhook disabled).
+- `src/index.ts`: extracted `startBot(config, logger)` — the full per-bot graph (db, feed, sentiment, broker, webhook, portfolio, risk, executor, DCA, triggers, strategy pool, notifier, reporter, poll loop) with its own tick/executeDecision/processTradingViewIntent closures + `stop()`; `main()` starts one bot per config from `loadConfigs()` and stops all on SIGINT/SIGTERM. Each bot uses its own `DB_PATH`.
+- Docs: `.env.example` (BOT_NAME, BOTS_JSON, webhook-port-0) + README "Multi-bot orchestration" section.
+- Tests `tests/bots.test.ts` (5: single default, N merged configs incl. per-bot port/symbol/name + inherited defaults, inherited SYMBOLS, malformed BOTS_JSON rejections, port-0 + BOT_NAME); suite 99/99, typecheck + build clean.
+
+### P3-2 AI strategy advisor — PENDING (default OFF, user-supplied key via USER_LLM_*)
+### P3-3 Short selling via margin API — PENDING (default OFF, heavy testing)
+### P3-4 Market making / arbitrage — PENDING (highest complexity, lowest priority)
 
 ## Explicitly NOT planned
 Multi-exchange abstraction, marketplace/social/mobile/charting SaaS, copy trading, taxes reporting.
