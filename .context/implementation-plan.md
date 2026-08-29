@@ -59,9 +59,11 @@ Basis: `.context/gap-analysis.md` priority ranking. Scope = on-prem, Nobitex-onl
 - Docs: `.env.example` + README section + `scripts/feed_tradingview.sh`.
 - Tests `tests/tradingview.test.ts` (9: parse mapping buy/sell/ticker, hold no-op, rejections, FIFO store, HTTP endpoint enqueue+persist, auth 401, disabled 404, unknown symbol 400); suite 89/89, typecheck + build clean.
 
-### P2-3 Signals framework
-- `src/signals/`: generic subscriber model (source: sentiment feed, TradingView, manual API, scheduled) each yielding a `SignalIntent`; strategy consumes unified intents. Refactor sentiment into a subscriber.
-- `Signals` replace `POST /api/v1/sentiment`-only flow; keep API compatible.
+### P2-3 Signals framework — DONE (2026-08-26)
+- `src/signals/broker.ts`: `SignalBroker` — unified `SignalIntent` model (`kind: sentiment|trade`, `source: sentiment-webhook|sentiment-feed|tradingview|manual|scheduled`); sentiment intents routed to a registered subscriber (returns the ingest result), trade intents queued per symbol in a bounded FIFO (cap 200) and drained via `shiftTrade`; `submit`/`stats` for observability.
+- `src/sentiment/server.ts`: refactored off direct `SentimentEngine`/`TradingViewSignals` — the webhook (sentiment + TradingView + JSONL feed) now only validates payloads and `submit()`s intents to the broker; API response shapes unchanged. `parseTradingViewAlert` returns a `TradeIntent`.
+- `src/index.ts`: broker wired as the single ingestion point — `onSentiment` → `SentimentEngine.ingest`; tick drains `signals.shiftTrade(pair.key)` into `processTradingViewIntent` (unchanged risk-gated path).
+- Tests: `tests/signals.test.ts` (5: sentiment routing + result, missing-sentiment rejection, trade FIFO/queue/drain, BUY/SELL + unknown-kind rejection, no-subscriber acceptance) + `tests/tradingview.test.ts` updated to the broker (parse→TradeIntent, endpoint enqueue via broker, sentiment-endpoint-through-broker end-to-end into `sentiment_events`); suite 94/94, typecheck + build clean.
 
 ## Phase 3 — Stretch (only if earlier phases land clean)
 

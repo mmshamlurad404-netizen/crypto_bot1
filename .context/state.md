@@ -1,16 +1,16 @@
 # State — 2026-08-26
 
-## Intent    — implement P2-2 TradingView webhook endpoint (Cryptohopper parity, Phase 2) and keep `.context/` updated at each step
-## Touched   — src/sentiment/server.ts — POST /api/v1/tradingview (Bearer auth, same token); parseTradingViewAlert maps action/strategy.order.action and symbol/ticker; TradingViewSignals bounded FIFO store; alerts persisted + intents enqueued; boundPort() accessor added — done
-## Touched   — src/db.ts — tradingview_signals table (ts/symbol/action/price/ticker/raw) + insertTradingViewSignal + countTradingViewSignals — done
-## Touched   — src/index.ts — tradingViewSignals store wired to webhook; processTradingViewIntent drains one pending intent per symbol per tick after the strategy: BUY -> risk.evaluateBuy(skipRsiGate) veto, SELL -> requires open position; both route through shared executeDecision; every intent recorded in signals (incl. blocked/ignored) — done
-## Touched   — src/config.ts — TRADINGVIEW_ENABLED env (default false, opt-in); tradingViewEnabled in BotConfig — done
-## Touched   — .env.example + README.md + scripts/feed_tradingview.sh — TradingView webhook docs + sample client — done
-## Touched   — tests/tradingview.test.ts — created: 9 tests (parse buy/sell/ticker/hold, rejection paths, FIFO store, HTTP enqueue+persist, auth 401, disabled 404, unknown symbol 400) — done
-## Touched   — .context/implementation-plan.md — P2-2 marked DONE — done
-## Decisions — TradingView intents are consumed asynchronously (one per symbol per tick, bounded FIFO), not executed inline in the HTTP handler — keeps webhook decoupled and routes decisions through the normal tick/execution path
-## Decisions — BUY intents skip only the RSI-entry ceiling (an explicit alert IS the signal); halt/cooldown/volatility/exposure/trade-cap/min-value gates still apply; SELL requires an open position (no sell risk gate exists in the codebase)
-## Decisions — reuses SENTIMENT_WEBHOOK_TOKEN and port (no new secret/port); TRADINGVIEW_ENABLED=false returns 404 to avoid surface when opted out
-## Verified  — 89/89 tests pass (80 + 9 new); typecheck + build clean
-## Open      — P2-3 Signals framework is next (unified subscriber/intent model; sentiment feed becomes a subscriber) — or user's choice
-## Next      — P2-3 Signals framework, or user's choice
+## Intent    — implement P2-3 Signals framework (Cryptohopper parity, Phase 2) and keep `.context/` updated at each step
+## Touched   — src/signals/broker.ts — created: SignalBroker + SignalIntent/TradeIntent/SubmitResult types; sentiment intents -> registered subscriber (returns ingest result), trade intents -> bounded per-symbol FIFO drained via shiftTrade; submit/stats — done
+## Touched   — src/sentiment/server.ts — refactored off direct SentimentEngine/TradingViewSignals: webhook (sentiment + tradingview + JSONL feed) now validates then submit()s intents to the broker; API response shapes unchanged; parseTradingViewAlert returns TradeIntent (source:"tradingview"); TradingViewSignals class removed — done
+## Touched   — src/index.ts — broker is the single ingestion point: onSentiment -> sentimentEngine.ingest; tick drains signals.shiftTrade(pair.key) -> processTradingViewIntent; signal details record intent source — done
+## Touched   — README.md — Signals framework section + architecture diagram updated (broker routing) — done
+## Touched   — tests/signals.test.ts — created: 5 broker tests (sentiment routing+result, missing-sentiment reject, trade FIFO/queue/drain, BUY/SELL + unknown-kind reject, no-subscriber acceptance) — done
+## Touched   — tests/tradingview.test.ts — updated to broker: parse->TradeIntent, endpoint enqueue via broker FIFO, sentiment-endpoint-through-broker end-to-end into sentiment_events — done
+## Touched   — .context/implementation-plan.md — P2-3 marked DONE — done
+## Decisions — broker is source-agnostic: adding a manual API or scheduled source later is just another submit(); no new env vars (P2-3 is internal plumbing)
+## Decisions — sentiment aggregation stays in SentimentEngine (strategy consumes the weighted score); the engine is the sentiment subscriber, not the webhook
+## Decisions — trade intents are drained one per symbol per tick (same cadence as the poll loop); bounded FIFO cap 200 prevents unbounded memory from a burst of alerts
+## Verified  — 94/94 tests pass (89 + 5 signals + tradingview rewrite); typecheck + build clean
+## Open      — Phase 2 complete. Phase 3 stretch items remain (short selling, market making, multi-bot orchestration, AI advisor) — all deliberate non-goals unless requested
+## Next      — Phase 3 stretch items, or user's choice

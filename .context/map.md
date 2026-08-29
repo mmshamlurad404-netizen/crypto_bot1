@@ -15,6 +15,7 @@ Updated: 2026-08-26
 │   ├── report/             # Performance analytics from audit DB (P1-2)
 │   ├── risk/               # Limit gates, volatility sizing, daily-loss halt, trailing stops
 │   ├── sentiment/          # HTTP webhook + JSONL feed + aggregation engine
+│   ├── signals/            # Unified SignalIntent bus: broker, FIFO trade intents (P2-3)
 │   ├── strategy/           # Hybrid RSI + sentiment entry/exit + DSL strategies + DCA ladder (P1-4, P2-1)
 │   ├── config/             # Strategy pool parsing + per-symbol build (P2-1)
 │   ├── triggers/           # Declarative rule DSL: condition -> notify/halt (P1-5)
@@ -47,7 +48,8 @@ src/config/pools.ts — parseStrategyPools (symbol -> "hybrid"|DSL) + buildStrat
 src/exchange/nobitex.ts — REST client: stats, trades, wallets, addOrder/status/cancel; per-path public throttle
 src/market/priceFeed.ts — in-memory PricePoint series, seed from recent trades, poll stats
 src/sentiment/engine.ts — confidence × time-decay weighted sentiment score
-src/sentiment/server.ts — HTTP server: /healthz, POST /api/v1/sentiment, POST /api/v1/tradingview (Bearer auth), TradingViewSignals FIFO store + parseTradingViewAlert, JSONL file poller
+src/sentiment/server.ts — HTTP server: /healthz, POST /api/v1/sentiment, POST /api/v1/tradingview (Bearer auth); validates payloads then submit()s SignalIntents to the broker; JSONL file poller
+src/signals/broker.ts — SignalBroker: sentiment intents -> registered subscriber (returns result), trade intents -> bounded per-symbol FIFO drained via shiftTrade; sources sentiment-webhook|sentiment-feed|tradingview|manual|scheduled
 src/strategy/hybrid.ts — evaluate(): warmup gate, exits, then sentiment+RSI entry with risk veto
 src/strategy/dsl.ts — DslStrategy: zod-validated entry/exit condition trees (rsi/volatility/sentiment/price vs SMA|EMA, and/or/not); same risk gates + DCA; DSL entries skip hybrid RSI ceiling
 src/strategy/dca.ts — DcaLadder: sorted {belowPct,buyPct} levels consumed in order per position; consumed only after risk approval; maxOrders cap
@@ -69,8 +71,9 @@ tests/metrics.test.ts — analytics over synthetic positions/snapshots/trades
 tests/risk.test.ts — risk gate order and halt behavior
 tests/dca.test.ts — DCA ladder order/caps, evaluateDca gate skip, strategy emit/consume/merge, orders.kind migration
 tests/triggers.test.ts — trigger edge firing/re-arm, condition types, config validation, halt wiring
+tests/signals.test.ts — SignalBroker: sentiment routing+result, rejections, trade FIFO/queue/drain, no-subscriber acceptance
 tests/dsl.test.ts — DSL node semantics, warmup, entry/exit, trend entry, pool parse/validation/assignment, config rejection
-tests/tradingview.test.ts — TradingView alert parse (action/ticker/hold/reject), FIFO store, HTTP endpoint enqueue+persist, auth/disabled/symbol errors
+tests/tradingview.test.ts — TradingView alert parse (action/ticker/hold/reject), broker enqueue, HTTP endpoint enqueue+persist, auth/disabled/symbol errors, sentiment-through-broker
 tests/strategy.test.ts — hybrid strategy buy/hold/sell paths
 tests/sentiment.test.ts — sentiment aggregation behavior
 .env.example — documented env contract; copy to .env
@@ -93,13 +96,15 @@ src/market/priceFeed.ts:21 seed — backfills series from /v2/trades history
 src/market/priceFeed.ts:45 append — dedupes by ts, trims to seriesMaxPoints
 src/sentiment/engine.ts:41 ingest — clamps sentiment/confidence to ±1, persists, prunes
 src/sentiment/engine.ts:73 snapshot — weighted score = Σ(confidence·decay·value)/Σ(confidence·decay)
-src/sentiment/server.ts:56 handle — Bearer-auth POST /api/v1/sentiment, accepts single or array
-src/sentiment/server.ts:104 pollFeed — re-reads JSONL only when mtime changes
-src/sentiment/server.ts:147 handleTradingView — Bearer-auth POST /api/v1/tradingview; 404 when TRADINGVIEW_ENABLED off; parse -> enqueue + persist
-src/sentiment/server.ts:33 TradingViewSignals.enqueue — bounded (200) per-symbol FIFO of pending TradingViewIntent
-src/sentiment/server.ts:87 parseTradingViewAlert — maps action/strategy.order.action + symbol/ticker; returns {intent,error}
+src/sentiment/server.ts:56 handle — Bearer-auth POST /api/v1/sentiment, accepts single or array; submits sentiment intents to broker
+src/sentiment/server.ts:104 pollFeed — re-reads JSONL only when mtime changes; submits sentiment intents to broker
+src/sentiment/server.ts:147 handleTradingView — Bearer-auth POST /api/v1/tradingview; 404 when TRADINGVIEW_ENABLED off; parse -> broker.submit(kind:trade) + persist
+src/sentiment/server.ts:87 parseTradingViewAlert — maps action/strategy.order.action + symbol/ticker; returns {intent: TradeIntent, error}
+src/signals/broker.ts:30 onSentiment — register the sentiment subscriber (wired to SentimentEngine.ingest in index.ts)
+src/signals/broker.ts:42 submit — routes by kind: sentiment -> subscriber, trade -> per-symbol bounded FIFO; returns SubmitResult
+src/signals/broker.ts:87 shiftTrade — pop oldest trade intent for a symbol (drained one per tick)
 src/index.ts:173 processTradingViewIntent — drains one intent/symbol/tick: BUY -> risk.evaluateBuy(skipRsiGate), SELL -> needs open position; routes via executeDecision
-src/index.ts:210 tradingViewSignals.shift — called per pair after the strategy decision in tick
+src/index.ts:210 signals.shiftTrade — called per pair after the strategy decision in tick
 src/strategy/hybrid.ts:41 evaluate — decision tree: warmup → SL/TP → sentiment-exit → overbought → entry
 src/risk/manager.ts:83 evaluateBuy — sequential gates: halted, open position, cooldown, volatility, min value, exposure, position size, daily loss, trade count, RSI
 src/risk/manager.ts:44 sizeByVolatility — scales size by benchmark/volatility ratio, capped
@@ -125,10 +130,10 @@ src/db.ts:255 closedPositionsBetween — closed positions by close_ts range (for
 src/db.ts:290 snapshotsBetween — equity/positions_value series by ts range (drawdown/Sharpe/exposure)
 
 ## Data flow
-1. Sentiment: scripts/feed_sentiment.sh (or external pipeline) → POST :3001/api/v1/sentiment → src/sentiment/server.ts:handle → engine.ingest → sentiment_events table
+1. Intents: POST :3001/api/v1/sentiment | /api/v1/tradingview | JSONL feed → src/sentiment/server.ts validates → SignalBroker.submit → sentiment intents → sentimentEngine.ingest → sentiment_events; trade intents → bounded per-symbol FIFO
+1b. TradingView drain: tick → signals.shiftTrade(pair.key) → processTradingViewIntent → risk veto → executeDecision; alerts in tradingview_signals table
 2. Prices: src/market/priceFeed.ts poll() → GET /market/stats → in-memory series → indicators.ts (RSI, volatility)
 3. Triggers: src/triggers/engine.ts evaluate() per symbol in tick (rsi/price/sentiment) → risk_events(kind=trigger) + notify (alerts table) / halt (risk manager)
-3b. TradingView: POST /api/v1/tradingview → parseTradingViewAlert → TradingViewSignals FIFO → per-symbol drain in tick → processTradingViewIntent → risk veto → executeDecision; alerts in tradingview_signals table
 4. Decision: strategy resolved per symbol via config/pools.ts buildStrategyPool (hybrid default, DSL override) → strategy/*.ts evaluate() → risk/manager.ts evaluateBuy/evaluateDca veto → signals table (every decision logged)
 5. Execution: executor.ts execute() → orders + trades tables → portfolio.applyTrade() → positions table + meta `day:YYYY-MM-DD:realized_pnl`
 6. Notify: TelegramNotifier.send() → alerts table → api.telegram.org sendMessage
@@ -160,3 +165,4 @@ src/db.ts:290 snapshotsBetween — equity/positions_value series by ts range (dr
 - DCA fills pass normal risk gates minus the open-position gate; cooldown/trade-cap still apply, so consecutive fills are throttled by COOLDOWN_MINUTES
 - Trigger rules are edge-triggered and in-memory (reset on restart); halt persists for the process lifetime; trigger inputs (rsi/price/sentiment) are recomputed per symbol in tick before the strategy runs
 - TradingView intents are consumed asynchronously one per symbol per tick (bounded FIFO, cap 200); BUY skips only the RSI-entry ceiling, SELL needs an open position; TRADINGVIEW_ENABLED defaults false and the endpoint 404s when off; alerts persist in tradingview_signals
+- SignalBroker is the single ingestion point: all external intents (sentiment/trade) flow through submit(); sentiment aggregation stays in SentimentEngine (the broker's sentiment subscriber); trade intents include source (tradingview|manual|scheduled) for audit

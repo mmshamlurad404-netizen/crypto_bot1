@@ -1,50 +1,11 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { readFileSync, statSync } from "node:fs";
-import { SentimentEngine } from "./engine.js";
 import { SentimentInput, SymbolPair } from "../types.js";
 import { AuditDb } from "../db.js";
+import { SignalBroker, TradeIntent } from "../signals/broker.js";
 import { pino, type Logger } from "pino";
 
 const MAX_BODY_BYTES = 64 * 1024;
-
-export interface TradingViewIntent {
-  symbol: string;
-  action: "BUY" | "SELL";
-  price: number | null;
-  receivedAt: string;
-}
-
-export class TradingViewSignals {
-  private queues = new Map<string, TradingViewIntent[]>();
-  private capacity = 200;
-
-  enqueue(intent: TradingViewIntent): void {
-    let q = this.queues.get(intent.symbol);
-    if (!q) {
-      q = [];
-      this.queues.set(intent.symbol, q);
-    }
-    q.push(intent);
-    if (q.length > this.capacity) q.splice(0, q.length - this.capacity);
-  }
-
-  shift(symbol: string): TradingViewIntent | null {
-    const q = this.queues.get(symbol);
-    const item = q ? q.shift() ?? null : null;
-    if (q && q.length === 0) this.queues.delete(symbol);
-    return item;
-  }
-
-  pendingCount(symbol: string): number {
-    return this.queues.get(symbol)?.length ?? 0;
-  }
-
-  totalPending(): number {
-    let n = 0;
-    for (const q of this.queues.values()) n += q.length;
-    return n;
-  }
-}
 
 interface TradingViewAlert {
   symbol?: string;
@@ -80,7 +41,7 @@ function resolveTradingViewSymbol(payload: TradingViewAlert, symbols: SymbolPair
   return null;
 }
 
-export function parseTradingViewAlert(body: string, symbols: SymbolPair[], nowIso: string): { intent: TradingViewIntent | null; error: string | null } {
+export function parseTradingViewAlert(body: string, symbols: SymbolPair[], nowIso: string): { intent: TradeIntent | null; error: string | null } {
   let payload: unknown;
   try {
     payload = JSON.parse(body);
@@ -101,11 +62,11 @@ export function parseTradingViewAlert(body: string, symbols: SymbolPair[], nowIs
   }
   if (action === "SKIP") return { intent: null, error: null };
   const price = typeof alert.close === "number" && Number.isFinite(alert.close) && alert.close > 0 ? alert.close : null;
-  return { intent: { symbol: pair.key, action: action as "BUY" | "SELL", price, receivedAt: nowIso }, error: null };
+  return { intent: { source: "tradingview", symbol: pair.key, action: action as "BUY" | "SELL", price, receivedAt: nowIso, raw: body }, error: null };
 }
 
 export class SentimentWebhook {
-  private engine: SentimentEngine;
+  private broker: SignalBroker;
   private token: string;
   private port: number;
   private server: ReturnType<typeof createServer> | null = null;
@@ -114,25 +75,23 @@ export class SentimentWebhook {
   private feedMtime = 0;
   private feedOffset = 0;
   private tradingViewEnabled: boolean;
-  private signals: TradingViewSignals;
   private db: AuditDb;
   private symbols: SymbolPair[];
 
   constructor(
-    engine: SentimentEngine,
+    broker: SignalBroker,
     token: string,
     port: number,
     logger: Logger,
     feedPath: string,
-    options: { tradingViewEnabled: boolean; signals: TradingViewSignals; db: AuditDb; symbols: SymbolPair[] }
+    options: { tradingViewEnabled: boolean; db: AuditDb; symbols: SymbolPair[] }
   ) {
-    this.engine = engine;
+    this.broker = broker;
     this.token = token;
     this.port = port;
     this.logger = logger;
     this.feedPath = feedPath;
     this.tradingViewEnabled = options.tradingViewEnabled;
-    this.signals = options.signals;
     this.db = options.db;
     this.symbols = options.symbols;
   }
@@ -208,15 +167,27 @@ export class SentimentWebhook {
       return;
     }
     const inputs = Array.isArray(payload) ? payload : [payload];
-    const snapshots = [];
+    const snapshots: unknown[] = [];
     let errors = 0;
     for (const input of inputs) {
       if (!input || typeof input.account !== "string" || !input.account || typeof input.symbol !== "string" || !input.symbol || typeof input.sentiment !== "number") {
         errors++;
         continue;
       }
-      const snap = this.engine.ingest(input);
-      snapshots.push(snap);
+      const result = this.broker.submit({
+        source: "sentiment-webhook",
+        kind: "sentiment",
+        account: input.account,
+        symbol: input.symbol,
+        sentiment: input.sentiment,
+        confidence: input.confidence,
+        receivedAt: new Date().toISOString(),
+      });
+      if (!result.accepted) {
+        errors++;
+        continue;
+      }
+      snapshots.push(result.result);
     }
     this.logger.debug({ count: inputs.length, errors }, "sentiment ingested via webhook");
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -249,20 +220,24 @@ export class SentimentWebhook {
       res.end(JSON.stringify({ status: "failed", code: "BadRequest", message: error }));
       return;
     }
+    let accepted = 0;
     if (intent) {
-      this.signals.enqueue(intent);
-      this.db.insertTradingViewSignal({
-        ts: intent.receivedAt,
-        symbol: intent.symbol,
-        action: intent.action,
-        price: intent.price,
-        ticker: null,
-        raw: text,
-      });
+      const result = this.broker.submit({ ...intent, kind: "trade" });
+      accepted = result.accepted ? 1 : 0;
+      if (result.accepted) {
+        this.db.insertTradingViewSignal({
+          ts: intent.receivedAt,
+          symbol: intent.symbol,
+          action: intent.action,
+          price: intent.price,
+          ticker: null,
+          raw: intent.raw ?? null,
+        });
+      }
     }
     this.logger.debug({ symbol: intent?.symbol ?? null, action: intent?.action ?? null }, "tradingview alert ingested via webhook");
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ status: "ok", accepted: intent ? 1 : 0 }));
+    res.end(JSON.stringify({ status: "ok", accepted }));
   }
 
   private pollFeed(): void {
@@ -284,8 +259,17 @@ export class SentimentWebhook {
             errors++;
             continue;
           }
-          this.engine.ingest(input);
-          accepted++;
+          const result = this.broker.submit({
+            source: "sentiment-feed",
+            kind: "sentiment",
+            account: input.account,
+            symbol: input.symbol,
+            sentiment: input.sentiment,
+            confidence: input.confidence,
+            receivedAt: new Date().toISOString(),
+          });
+          if (result.accepted) accepted++;
+          else errors++;
         } catch {
           errors++;
         }

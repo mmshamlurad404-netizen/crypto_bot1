@@ -4,7 +4,8 @@ import { AuditDb } from "./db.js";
 import { NobitexClient } from "./exchange/nobitex.js";
 import { PriceFeed } from "./market/priceFeed.js";
 import { SentimentEngine } from "./sentiment/engine.js";
-import { SentimentWebhook, TradingViewSignals, TradingViewIntent } from "./sentiment/server.js";
+import { SentimentWebhook } from "./sentiment/server.js";
+import { SignalBroker, TradeIntent } from "./signals/broker.js";
 import { PortfolioManager } from "./portfolio/manager.js";
 import { RiskManager } from "./risk/manager.js";
 import { Executor } from "./execution/executor.js";
@@ -43,10 +44,17 @@ function main(): void {
   const client = new NobitexClient(config.nobitexBaseUrl, config.nobitexApiKey);
   const priceFeed = new PriceFeed(client, config.symbols, config.seriesMaxPoints, config.seedSeriesFromTrades);
   const sentimentEngine = new SentimentEngine(db, config.sentimentWindowMs, config.sentimentHalfLifeMs, config.sentimentMinConfidence);
-  const tradingViewSignals = new TradingViewSignals();
-  const webhook = new SentimentWebhook(sentimentEngine, config.sentimentWebhookToken, config.sentimentWebhookPort, logger, config.sentimentJsonFeed, {
+  const signals = new SignalBroker();
+  signals.onSentiment((intent) =>
+    sentimentEngine.ingest({
+      account: intent.account ?? "sentiment-webhook",
+      symbol: intent.symbol,
+      sentiment: intent.sentiment!,
+      confidence: intent.confidence,
+    })
+  );
+  const webhook = new SentimentWebhook(signals, config.sentimentWebhookToken, config.sentimentWebhookPort, logger, config.sentimentJsonFeed, {
     tradingViewEnabled: config.tradingViewEnabled,
-    signals: tradingViewSignals,
     db,
     symbols: config.symbols,
   });
@@ -170,7 +178,7 @@ function main(): void {
     }
   }
 
-  async function processTradingViewIntent(tv: TradingViewIntent, pair: SymbolPair): Promise<void> {
+  async function processTradingViewIntent(tv: TradeIntent, pair: SymbolPair): Promise<void> {
     const ts = new Date().toISOString();
     if (tv.action === "BUY") {
       const price = tv.price ?? priceFeed.getLatestPrice(pair.key);
@@ -217,7 +225,7 @@ function main(): void {
         price: decision.price,
         seriesLen: priceFeed.getSeries(pair.key).length,
         reason: decision.reason,
-        details: "source: tradingview",
+        details: `source: ${tv.source}`,
       });
       await executeDecision(decision);
     } else {
@@ -232,7 +240,7 @@ function main(): void {
           price: tv.price ?? priceFeed.getLatestPrice(pair.key),
           seriesLen: priceFeed.getSeries(pair.key).length,
           reason: "tradingview sell ignored: no open position",
-          details: "source: tradingview",
+          details: `source: ${tv.source}`,
         });
         logger.info({ symbol: pair.key }, "tradingview sell ignored: no open position");
         return;
@@ -254,7 +262,7 @@ function main(): void {
         price: decision.price,
         seriesLen: priceFeed.getSeries(pair.key).length,
         reason: decision.reason,
-        details: "source: tradingview",
+        details: `source: ${tv.source}`,
       });
       await executeDecision(decision);
     }
@@ -303,7 +311,7 @@ function main(): void {
         } else {
           logger.debug({ symbol: decision.symbol, reason: decision.reason }, "HOLD");
         }
-        const tvIntent = tradingViewSignals.shift(pair.key);
+        const tvIntent = signals.shiftTrade(pair.key);
         if (tvIntent) {
           await processTradingViewIntent(tvIntent, pair);
         }

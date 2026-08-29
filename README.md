@@ -27,6 +27,7 @@ src/
   indicators.ts         # RSI (Wilder) + volatility
   sentiment/engine.ts   # recency/confidence-weighted aggregation
   sentiment/server.ts   # HTTP webhook + JSONL file feed
+  signals/broker.ts     # unified SignalIntent bus (sentiment/trade intents)
   strategy/hybrid.ts    # sentiment + RSI entry/exit rules
   risk/manager.ts       # risk limits, position sizing, halt logic
   portfolio/manager.ts  # holdings, equity, PnL, positions
@@ -40,16 +41,22 @@ src/
 
 ```
 Market data (public) ──► PriceFeed ──► RSI / volatility
-                                         │
-Sentiment webhook / JSONL ──► Engine ────┤
-                                         ▼
-                                   HybridStrategy ──► RiskManager (limits)
-                                         │                  │
-                                         ▼                  ▼
-                                     Executor ──► PortfolioManager ──► SQLite
-                                         │
-                                         ▼
-                                    Telegram alerts + daily report
+                                          │
+Sentiment webhook / JSONL ─┐              │
+TradingView webhook ───────┼─► SignalBroker
+Manual / scheduled ────────┘     │        │
+                                 ▼        ▼
+                          sentiment    trade intents (FIFO)
+                          subscribers  ──► risk-gated execution
+                                 │
+                                 ▼
+                           HybridStrategy ──► RiskManager (limits)
+                                 │                  │
+                                 ▼                  ▼
+                             Executor ──► PortfolioManager ──► SQLite
+                                 │
+                                 ▼
+                            Telegram alerts + daily report
 ```
 
 ## Quick start
@@ -189,6 +196,22 @@ from the risk config always apply on top. Example:
 ```
 
 The backtester replays the pool assignment for the symbol under test.
+
+## Signals framework
+
+All external intents flow through a single `SignalBroker` (`src/signals/broker.ts`)
+as `SignalIntent`s:
+
+- **sentiment** intents (`source`: `sentiment-webhook` | `sentiment-feed`) are
+  routed to subscribers — the sentiment engine aggregates them into the score the
+  strategies consume. Adding a new sentiment source is just another `submit()`.
+- **trade** intents (`source`: `tradingview` | `manual` | `scheduled`) are
+  `BUY`/`SELL` requests queued per symbol in a bounded FIFO (cap 200) and drained
+  one per tick through the shared risk-gated execution path.
+
+The webhook server (`/api/v1/sentiment`, `/api/v1/tradingview`) is one source
+of intents; the API surface is unchanged. `SignalBroker.stats()` reports
+submitted/rejected counts for observability.
 
 ## TradingView webhook
 
