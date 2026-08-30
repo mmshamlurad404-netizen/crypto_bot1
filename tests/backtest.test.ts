@@ -24,7 +24,7 @@ function constantSentiment(bars: BacktestBar[], value: number): SentimentInput[]
   return bars.map((b) => ({ account: "test-account", symbol: pair.src, sentiment: value, confidence: 1, timestamp: b.ts }));
 }
 
-test("toUdfSymbol maps rls quote to irt and passthrough others", () => {
+test("toUdfSymbol maps rls quote to irt and passthrough others", async () => {
   assert.equal(toUdfSymbol(pair), "BTCIRT");
   assert.equal(toUdfSymbol({ src: "eth", dst: "usdt", key: "eth/usdt", market: "ETH-USDT" }), "ETHUSDT");
 });
@@ -43,23 +43,23 @@ test("loadHistory parses UDF bars and maps symbol", async () => {
   assert.equal(bars[1]!.close, 11.5);
 });
 
-test("no sentiment source → no trades, equity flat", () => {
+test("no sentiment source → no trades, equity flat", async () => {
   const config = testConfig();
   const startTs = Date.UTC(2026, 0, 1);
   const bars = barsFromCloses(Array.from({ length: 80 }, (_, i) => 200 - i), startTs);
-  const result = runBacktest({ config, pair, bars, sentimentEvents: [], startEquity: 100_000_000 });
+  const result = await runBacktest({ config, pair, bars, sentimentEvents: [], startEquity: 100_000_000 });
   assert.equal(result.metrics.roundTrips, 0);
   assert.equal(result.metrics.fills, 0);
   assert.equal(result.metrics.endEquity, 100_000_000);
   assert.ok(result.equityCurve.length === 80);
 });
 
-test("downtrend with bullish sentiment → buy then stop-loss sells (losses, no wins)", () => {
+test("downtrend with bullish sentiment → buy then stop-loss sells (losses, no wins)", async () => {
   const config = testConfig({ STOP_LOSS_PCT: "3", TAKE_PROFIT_PCT: "50", RSI_OVERBOUGHT: "95", COOLDOWN_MINUTES: "0" });
   const startTs = Date.UTC(2026, 0, 1);
   const bars = barsFromCloses(Array.from({ length: 80 }, (_, i) => 200 - i), startTs);
   const sentiment = constantSentiment(bars, 0.8);
-  const result = runBacktest({ config, pair, bars, sentimentEvents: sentiment, startEquity: 100_000_000 });
+  const result = await runBacktest({ config, pair, bars, sentimentEvents: sentiment, startEquity: 100_000_000 });
   assert.ok(result.metrics.roundTrips >= 1, "expected at least one round trip");
   assert.ok(result.metrics.losses >= 1);
   assert.equal(result.metrics.wins, 0);
@@ -68,14 +68,14 @@ test("downtrend with bullish sentiment → buy then stop-loss sells (losses, no 
   assert.equal(result.metrics.buys, result.metrics.sells);
 });
 
-test("decline then rebound → single buy + take-profit sell (win)", () => {
+test("decline then rebound → single buy + take-profit sell (win)", async () => {
   const config = testConfig({ STOP_LOSS_PCT: "50", TAKE_PROFIT_PCT: "1", RSI_OVERBOUGHT: "95", COOLDOWN_MINUTES: "0" });
   const startTs = Date.UTC(2026, 0, 1);
   const decline = Array.from({ length: 70 }, (_, i) => 200 - (i * 100) / 69);
   const rebound = Array.from({ length: 30 }, (_, i) => 100 + (i * 100) / 29);
   const bars = barsFromCloses([...decline, ...rebound], startTs);
   const sentiment = constantSentiment(bars, 0.8);
-  const result = runBacktest({ config, pair, bars, sentimentEvents: sentiment, startEquity: 100_000_000 });
+  const result = await runBacktest({ config, pair, bars, sentimentEvents: sentiment, startEquity: 100_000_000 });
   assert.equal(result.metrics.buys, 1);
   assert.equal(result.metrics.sells, 1);
   assert.equal(result.roundTrips.length, 1);
@@ -87,12 +87,12 @@ test("decline then rebound → single buy + take-profit sell (win)", () => {
   assert.ok(result.metrics.maxDrawdownPct >= 0);
 });
 
-test("sentiment drives entries: neutral sentiment with low RSI stays flat", () => {
+test("sentiment drives entries: neutral sentiment with low RSI stays flat", async () => {
   const config = testConfig({ RSI_ENTRY_UPPER: "35" });
   const startTs = Date.UTC(2026, 0, 1);
   const bars = barsFromCloses(Array.from({ length: 60 }, (_, i) => 200 - i * 2), startTs);
   const sentiment = constantSentiment(bars, 0);
-  const result = runBacktest({ config, pair, bars, sentimentEvents: sentiment, startEquity: 100_000_000 });
+  const result = await runBacktest({ config, pair, bars, sentimentEvents: sentiment, startEquity: 100_000_000 });
   assert.equal(result.metrics.roundTrips, 0);
   assert.equal(result.metrics.fills, 0);
 });

@@ -61,6 +61,12 @@ const envSchema = z.object({
 
   STRATEGY_POOLS: z.string().default("{}"),
 
+  USER_LLM_API_KEY: z.string().default(""),
+  USER_LLM_BASE_URL: z.string().url().default("https://api.deepseek.com/v1"),
+  USER_LLM_MODEL: z.string().default("deepseek-chat"),
+  AI_ADVISOR_MIN_INTERVAL_SECONDS: z.coerce.number().int().min(1).default(300),
+  AI_ADVISOR_CONTEXT_BARS: z.coerce.number().int().min(5).default(40),
+
   TELEGRAM_BOT_TOKEN: z.string().default(""),
   TELEGRAM_CHAT_ID: z.string().default(""),
   DAILY_REPORT_TIME: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).default("08:00"),
@@ -120,6 +126,7 @@ export interface BotConfig {
   dcaMaxOrdersPerPosition: number;
   triggers: TriggerRule[];
   strategyPools: Record<string, StrategySpec>;
+  aiAdvisor: { apiKey: string; baseUrl: string; model: string; minIntervalMs: number; contextBars: number } | null;
   telegramBotToken: string;
   telegramChatId: string;
   dailyReportTime: string;
@@ -218,6 +225,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
       throw new Error(`STRATEGY_POOLS references symbol "${symbol}" which is not in SYMBOLS`);
     }
   }
+  const usesAi = Object.values(strategyPools).some((spec) => spec.kind === "ai");
+  const aiApiKey = parsed.USER_LLM_API_KEY.trim();
+  if (usesAi && !aiApiKey) {
+    throw new Error('STRATEGY_POOLS uses the "ai" strategy but USER_LLM_API_KEY is not set');
+  }
   return {
     botName: parsed.BOT_NAME.trim() || "default",
     nodeEnv: parsed.NODE_ENV,
@@ -265,6 +277,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     dcaMaxOrdersPerPosition: parsed.DCA_MAX_ORDERS_PER_POSITION,
     triggers,
     strategyPools,
+    aiAdvisor: aiApiKey
+      ? {
+          apiKey: aiApiKey,
+          baseUrl: parsed.USER_LLM_BASE_URL.replace(/\/$/, ""),
+          model: parsed.USER_LLM_MODEL.trim(),
+          minIntervalMs: parsed.AI_ADVISOR_MIN_INTERVAL_SECONDS * 1000,
+          contextBars: parsed.AI_ADVISOR_CONTEXT_BARS,
+        }
+      : null,
     telegramBotToken: parsed.TELEGRAM_BOT_TOKEN.trim(),
     telegramChatId: parsed.TELEGRAM_CHAT_ID.trim(),
     dailyReportTime: parsed.DAILY_REPORT_TIME,

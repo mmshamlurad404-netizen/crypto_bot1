@@ -108,6 +108,7 @@ export function startBot(config: BotConfig, baseLogger: Logger): BotRuntime {
       sentimentExitThreshold: config.sentimentExitThreshold,
     },
     dca: dcaLadder,
+    ai: config.aiAdvisor,
   });
   const notifier = new TelegramNotifier(db, config.telegramBotToken, config.telegramChatId, logger);
   const reporter = new DailyReporter(db, portfolio, priceFeed, sentimentEngine, notifier, config.symbols, logger);
@@ -302,7 +303,7 @@ export function startBot(config: BotConfig, baseLogger: Logger): BotRuntime {
             risk.haltTrading(ev.message);
           }
         }
-        const decision = strategyPool.get(pair.key)!.evaluate(pair);
+        const decision = await strategyPool.get(pair.key)!.evaluate(pair);
         if (decision.action === "BUY" || decision.action === "SELL") {
           db.insertSignal({
             ts: new Date().toISOString(),

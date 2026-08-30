@@ -117,7 +117,7 @@ Requires either --sentiment or --sentiment-file.`);
   }
 
   logger.info({ bars: bars.length }, "backtest: running");
-  const result = runBacktest({ config, pair, bars, sentimentEvents, startEquity });
+  const result = await runBacktest({ config, pair, bars, sentimentEvents, startEquity });
 
   if (args.json === "true") {
     console.log(JSON.stringify(result));

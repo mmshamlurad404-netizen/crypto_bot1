@@ -6,16 +6,18 @@ import { SentimentEngine } from "../sentiment/engine.js";
 import { SymbolPair, SignalDecision } from "../types.js";
 import { HybridStrategy, StrategyConfigShape } from "../strategy/hybrid.js";
 import { DslJson, parseDsl, DslStrategy } from "../strategy/dsl.js";
+import { AiAdvisorConfig, AiAdvisorStrategy, HttpLlmClient } from "../strategy/ai.js";
 import { DcaLadder } from "../strategy/dca.js";
 
-export type StrategySpec = { kind: "hybrid" } | { kind: "dsl"; dsl: DslJson };
+export type StrategySpec = { kind: "hybrid" } | { kind: "ai" } | { kind: "dsl"; dsl: DslJson };
 
 export interface StrategyLike {
-  evaluate(pair: SymbolPair): SignalDecision;
+  evaluate(pair: SymbolPair): SignalDecision | Promise<SignalDecision>;
 }
 
 function parseSpec(value: unknown, key: string): StrategySpec {
   if (value === "hybrid") return { kind: "hybrid" };
+  if (value === "ai") return { kind: "ai" };
   if (value !== null && typeof value === "object") {
     try {
       return { kind: "dsl", dsl: parseDsl(value) };
@@ -23,7 +25,7 @@ function parseSpec(value: unknown, key: string): StrategySpec {
       throw new Error(`STRATEGY_POOLS["${key}"] is not a valid DSL strategy: ${(err as Error).message}`);
     }
   }
-  throw new Error(`STRATEGY_POOLS["${key}"] must be "hybrid" or a DSL strategy object`);
+  throw new Error(`STRATEGY_POOLS["${key}"] must be "hybrid", "ai" or a DSL strategy object`);
 }
 
 export function parseStrategyPools(raw: string): Record<string, StrategySpec> {
@@ -53,16 +55,25 @@ export interface StrategyPoolDeps {
   risk: RiskManager;
   strategyConfig: StrategyConfigShape;
   dca: DcaLadder;
+  ai: AiAdvisorConfig | null;
 }
 
 export function buildStrategyPool(args: StrategyPoolDeps): Map<string, StrategyLike> {
-  const { pool, symbols, db, priceFeed, sentiment, portfolio, risk, strategyConfig, dca } = args;
+  const { pool, symbols, db, priceFeed, sentiment, portfolio, risk, strategyConfig, dca, ai } = args;
   const hybrid = new HybridStrategy(db, priceFeed, sentiment, portfolio, risk, strategyConfig, dca);
+  const aiStrategy = ai
+    ? new AiAdvisorStrategy(db, priceFeed, sentiment, portfolio, risk, strategyConfig, new HttpLlmClient(ai.baseUrl, ai.apiKey, ai.model), {
+        contextBars: ai.contextBars,
+        minIntervalMs: ai.minIntervalMs,
+      })
+    : null;
   const map = new Map<string, StrategyLike>();
   for (const pair of symbols) {
     const spec = pool[pair.key];
     if (!spec || spec.kind === "hybrid") {
       map.set(pair.key, hybrid);
+    } else if (spec.kind === "ai") {
+      map.set(pair.key, aiStrategy ?? hybrid);
     } else {
       map.set(pair.key, new DslStrategy(db, priceFeed, sentiment, portfolio, risk, strategyConfig.rsiPeriod, spec.dsl, dca));
     }

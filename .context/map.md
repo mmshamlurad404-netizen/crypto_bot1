@@ -43,7 +43,7 @@ src/types.ts — shared domain types (SymbolPair, SignalDecision, Position, Orde
 src/db.ts — AuditDb: 10 tables, indexes, all insert/query methods, migrations on open
 src/logger.ts — pino logger, pino-pretty transport at debug/trace
 src/indicators.ts — RSI (Wilder smoothing), volatility (60-bar log returns), SMA/EMA (null on insufficient data)
-src/config/pools.ts — parseStrategyPools (symbol -> "hybrid"|DSL) + buildStrategyPool -> Map<symbol, StrategyLike>; hybrid instance shared when no DSL override
+src/config/pools.ts — parseStrategyPools (symbol -> "hybrid"|"ai"|DSL) + buildStrategyPool -> Map<symbol, StrategyLike>; StrategyLike.evaluate is promise-capable; shared hybrid/ai instances; StrategyPoolDeps.ai
 src/exchange/nobitex.ts — REST client: stats, trades, wallets, addOrder/status/cancel; per-path public throttle
 src/market/priceFeed.ts — in-memory PricePoint series, seed from recent trades, poll stats
 src/sentiment/engine.ts — confidence × time-decay weighted sentiment score
@@ -51,6 +51,7 @@ src/sentiment/server.ts — HTTP server: /healthz, POST /api/v1/sentiment, POST 
 src/signals/broker.ts — SignalBroker: sentiment intents -> registered subscriber (returns result), trade intents -> bounded per-symbol FIFO drained via shiftTrade; sources sentiment-webhook|sentiment-feed|tradingview|manual|scheduled
 src/strategy/hybrid.ts — evaluate(): warmup gate, exits, then sentiment+RSI entry with risk veto
 src/strategy/dsl.ts — DslStrategy: zod-validated entry/exit condition trees (rsi/volatility/sentiment/price vs SMA|EMA, and/or/not); same risk gates + DCA; DSL entries skip hybrid RSI ceiling
+src/strategy/ai.ts — AiAdvisorStrategy: async LLM-driven BUY/SELL/HOLD via HttpLlmClient (OpenAI-compatible /chat/completions); snapshot = bars+indicators+sentiment+position+riskLimits; minIntervalMs throttle; warmup; errors→HOLD; BUY passes risk.skipRsiGate, SELL needs open position; parseAdvice extracts+clamps the JSON reply
 src/strategy/dca.ts — DcaLadder: sorted {belowPct,buyPct} levels consumed in order per position; consumed only after risk approval; maxOrders cap
 src/triggers/engine.ts — TriggerEngine: edge-triggered rules (rsi/price/sentiment below/above) -> notify/halt; per-symbol evaluation before strategy
 src/risk/manager.ts — evaluateBuy gate chain, volatility sizing, stop-loss/take-profit, trailing stops, evaluateDca (skips open-position gate), halt state; evaluateBuy accepts {skipRsiGate} for DSL entries
@@ -59,7 +60,7 @@ src/execution/executor.ts — fills at best bid/ask, dry-run simulation or live 
 src/alerts/telegram.ts — sendMessage with HTML, logs every alert to DB
 src/alerts/report.ts — DailyReporter: snapshot, HTML report, prev-day equity meta
 src/backtest/data.ts — loadHistory: paged /market/udf/history fetch (exchange keeps ~500 bars) + loadSentimentFile
-src/backtest/engine.ts — runBacktest: replays real strategy/risk/portfolio over bars on an injectable clock
+src/backtest/engine.ts — runBacktest: replays real strategy/risk/portfolio over bars on an injectable clock; async (await strategy.evaluate), ai:null (no LLM in backtests)
 src/backtest/run.ts — CLI: --symbol/--days/--resolution/--sentiment/--sentiment-file/--json/--verbose
 src/report/metrics.ts — computeMetrics: win rate, profit factor, drawdown, Sharpe, exposure from audit DB
 src/export/trades.ts — CSV export CLI: --kind trades|positions, --from/--to (UTC dates); EPIPE-safe stdout

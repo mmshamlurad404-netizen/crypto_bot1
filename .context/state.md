@@ -1,14 +1,16 @@
-# State — 2026-08-26
+# State — 2026-08-30
 
-## Intent    — implement P3-1 Multi-bot orchestration (Phase 3, all stretch items requested step by step) and keep `.context/` updated at each step
-## Touched   — src/config.ts — BOTS_JSON env + loadConfigs() -> BotConfig[] (each entry merged over base env); BOT_NAME env (default "default"); SENTIMENT_WEBHOOK_PORT allows 0 (webhook disabled) — done
-## Touched   — src/index.ts — extracted startBot(config, logger): full per-bot graph (db/feed/sentiment/broker/webhook/portfolio/risk/executor/DCA/triggers/pool/notifier/reporter + own tick + executeDecision + processTradingViewIntent) returning BotRuntime{name, stop}; main() starts one bot per config from loadConfigs(), stops all on SIGINT/SIGTERM; webhook conditional on port > 0 — done
-## Touched   — .env.example + README.md — BOT_NAME/BOTS_JSON/port-0 docs + "Multi-bot orchestration" section — done
-## Touched   — tests/bots.test.ts — created: 5 tests (single default, N merged configs with per-bot overrides + inherited defaults, inherited SYMBOLS, malformed BOTS_JSON rejections, port-0 + BOT_NAME) — done
-## Touched   — .context/implementation-plan.md — P3-1 marked DONE, P3-2/3/4 marked PENDING — done
-## Decisions — each bot gets its own DB_PATH + poll loop + risk manager (full isolation); sharing is only the logger and the process — one bot cannot affect another's capital
-## Decisions — webhook is per-bot and opt-in via SENTIMENT_WEBHOOK_PORT>0; bots must use distinct ports (EADDRINUSE otherwise); BOTS_JSON unset keeps classic single-bot behavior
-## Decisions — startBot is NOT unit-tested directly (it fires a network tick on construction); config layer (loadConfigs) is the tested surface
-## Verified  — 99/99 tests pass (94 + 5 bots); typecheck + build clean
-## Open      — P3-2 AI strategy advisor next (default OFF; user-supplied key via USER_LLM_* per no-read-llm-env rule), then P3-3 short selling, then P3-4 market making
-## Next      — P3-2 AI strategy advisor
+## Intent    — implement P3-2 AI strategy advisor (Phase 3, all stretch items requested step by step) and keep `.context/` updated at each step
+## Touched   — src/strategy/ai.ts — created: AiAdvisorStrategy (async evaluate → SignalDecision), HttpLlmClient (OpenAI-compatible /chat/completions), parseAdvice (first JSON object, confidence clamped, action validated) — done
+## Touched   — src/config/pools.ts — StrategySpec {kind:"hybrid"|"ai"|"dsl"}; StrategyLike.evaluate returns SignalDecision|Promise<SignalDecision>; StrategyPoolDeps.ai: AiAdvisorConfig|null; buildStrategyPool builds one shared aiStrategy (hybrid fallback); parseSpec accepts "ai" — done
+## Touched   — src/config.ts — USER_LLM_API_KEY/BASE_URL/MODEL + AI_ADVISOR_MIN_INTERVAL_SECONDS/CONTEXT_BARS; validation rejects "ai" in pools without a key — done
+## Touched   — src/backtest/engine.ts — runBacktest is now async (await strategy.evaluate), ai:null (no LLM in backtest); run.ts + backtest.test.ts await it — done
+## Touched   — .env.example + README.md — AI-advisor block + "AI advisor" section — done
+## Touched   — tests/ai.test.ts — created: 9 tests (parseAdvice valid/invalid, BUY approved/risk-blocked/position-open, SELL with/without position, HOLD, throttle, warmup+LLM error, pools+config validation) — done
+## Touched   — .context/implementation-plan.md — P3-2 marked DONE, P3-3/4 marked PENDING — done
+## Decisions — AI advisor is OFF unless a symbol is "ai" in STRATEGY_POOLS AND USER_LLM_API_KEY is set; the key is supplied by the user, never read from the environment or bundled (no-read-llm-env rule)
+## Decisions — AI BUY bypasses only the hybrid RSI ceiling (skipRsiGate); cooldown/halt/volatility/exposure/trade-cap/min-value still enforced; errors/throttle/holds all degrade to HOLD
+## Decisions — backtester never calls an LLM (ai:null); StrategyLike.evaluate is promise-capable, so runBacktest became async
+## Verified  — 108/108 tests pass; typecheck + build clean
+## Open      — P3-3 short selling via margin API next (default OFF, heavy testing), then P3-4 market making / arbitrage
+## Next      — commit P3-2 (feat(strategy): AI advisor) + push; then P3-3

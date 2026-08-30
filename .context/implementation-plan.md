@@ -73,7 +73,14 @@ Basis: `.context/gap-analysis.md` priority ranking. Scope = on-prem, Nobitex-onl
 - Docs: `.env.example` (BOT_NAME, BOTS_JSON, webhook-port-0) + README "Multi-bot orchestration" section.
 - Tests `tests/bots.test.ts` (5: single default, N merged configs incl. per-bot port/symbol/name + inherited defaults, inherited SYMBOLS, malformed BOTS_JSON rejections, port-0 + BOT_NAME); suite 99/99, typecheck + build clean.
 
-### P3-2 AI strategy advisor — PENDING (default OFF, user-supplied key via USER_LLM_*)
+### P3-2 AI strategy advisor — DONE (2026-08-30)
+- `src/strategy/ai.ts`: `AiAdvisorStrategy implements StrategyLike` (async `evaluate` → `SignalDecision`), `HttpLlmClient` (OpenAI-compatible `/chat/completions`, `parseAdvice` extracts the first JSON object and clamps confidence). Context snapshot = last `contextBars` closes + rsi/volatility/sma20/sma50/ema20/sentiment/position/riskLimits; `minIntervalMs` throttle; warmup `< rsiPeriod+5`; LLM errors → HOLD; SELL ignored without an open position; BUY skipped while a position is open; BUY passes `risk.evaluateBuy(skipRsiGate)`.
+- `src/config/pools.ts`: `StrategySpec = {kind:"hybrid"}|{kind:"ai"}|{kind:"dsl";dsl}`; `StrategyLike.evaluate` now returns `SignalDecision | Promise<SignalDecision>`; `buildStrategyPool` takes `StrategyPoolDeps.ai: AiAdvisorConfig | null` and builds one shared `aiStrategy` (hybrid fallback when `ai` null); `parseSpec` accepts the string `"ai"`.
+- `src/config.ts`: `USER_LLM_API_KEY` (default ""), `USER_LLM_BASE_URL` (default `https://api.deepseek.com/v1`), `USER_LLM_MODEL` (default `deepseek-chat`), `AI_ADVISOR_MIN_INTERVAL_SECONDS` (default 300), `AI_ADVISOR_CONTEXT_BARS` (default 40); validation rejects `"ai"` in pools without `USER_LLM_API_KEY`.
+- `src/backtest/engine.ts`: `runBacktest` is now `async` (pool interface is promise-capable), passes `ai: null` — no LLM in backtests; `backtest/run.ts` + `tests/backtest.test.ts` await it.
+- Docs: `.env.example` AI-advisor block + README "AI advisor" section.
+- Tests `tests/ai.test.ts` (9: parseAdvice, BUY-approved/risk-blocked/position-open, SELL-with/without position, HOLD, throttle, warmup+error, pools+config validation); suite 108/108, typecheck + build clean.
+
 ### P3-3 Short selling via margin API — PENDING (default OFF, heavy testing)
 ### P3-4 Market making / arbitrage — PENDING (highest complexity, lowest priority)
 

@@ -174,7 +174,7 @@ Triggered events are written to `risk_events` (`kind='trigger'`).
 
 The hybrid strategy is the default, but you can assign a **declarative DSL
 strategy** to individual symbols via `STRATEGY_POOLS` (JSON object mapping
-`symbol -> "hybrid" | <dsl>`). Symbols not listed use the hybrid strategy.
+`symbol -> "hybrid" | "ai" | <dsl>`). Symbols not listed use the hybrid strategy.
 
 A DSL strategy is a JSON object with optional `warmupSamples`, `entry` and
 `exit` rule trees composed of nodes:
@@ -194,6 +194,30 @@ from the risk config always apply on top. Example:
 ```json
 {"btc/rls":"hybrid","eth/rls":{"entry":{"and":[{"sentiment_gt":0.2},{"price_gt_ma":{"kind":"ema","period":20}}]},"exit":{"rsi_gt":75}}}
 ```
+
+## AI advisor
+
+Assign the string `"ai"` to a symbol in `STRATEGY_POOLS` to drive its decisions
+from a large language model instead of the hybrid/DSL rules:
+
+```json
+{"btc/rls":"ai"}
+```
+
+The advisor is only active when `USER_LLM_API_KEY` is set (config validation
+rejects `"ai"` without a key) — supply your own key via `USER_LLM_API_KEY`,
+`USER_LLM_BASE_URL` (default `https://api.deepseek.com/v1`) and
+`USER_LLM_MODEL` (default `deepseek-chat`). It calls an OpenAI-compatible
+`/chat/completions` endpoint, sending a JSON snapshot (last `AI_ADVISOR_CONTEXT_BARS`
+closes, RSI, volatility, SMA/EMA, aggregate sentiment, open position, risk
+limits) and maps the reply to a BUY/SELL/HOLD intent:
+
+- BUY still passes the risk manager (only the hybrid RSI ceiling is skipped) and
+  is ignored while a position is already open.
+- SELL requires an open position.
+- HOLD, throttled calls (`AI_ADVISOR_MIN_INTERVAL_SECONDS`, default 300), and
+  LLM errors always fall back to a no-op HOLD.
+- The backtester never invokes the LLM (`ai` is unavailable there).
 
 The backtester replays the pool assignment for the symbol under test.
 

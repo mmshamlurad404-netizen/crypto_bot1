@@ -68,7 +68,7 @@ export interface RunBacktestArgs {
   startEquity?: number;
 }
 
-export function runBacktest(args: RunBacktestArgs): BacktestResult {
+export async function runBacktest(args: RunBacktestArgs): Promise<BacktestResult> {
   const { config, pair, bars } = args;
   const startEquity = args.startEquity ?? config.virtualStartEquity;
   const db = new AuditDb(":memory:");
@@ -125,6 +125,7 @@ export function runBacktest(args: RunBacktestArgs): BacktestResult {
       sentimentExitThreshold: config.sentimentExitThreshold,
     },
     dca: dcaLadder,
+    ai: null,
   });
   const strategy = strategyPool.get(pair.key)!;
 
@@ -155,7 +156,7 @@ export function runBacktest(args: RunBacktestArgs): BacktestResult {
       eventIdx++;
     }
 
-    const decision = strategy.evaluate(pair);
+    const decision = await strategy.evaluate(pair);
 
     if (decision.action === "BUY") {
       const fillPrice = decision.price ?? bar.close;
