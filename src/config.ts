@@ -57,6 +57,14 @@ const envSchema = z.object({
   DCA_MAX_ORDERS_PER_POSITION: z.coerce.number().int().min(0).default(4),
   DCA_LEVELS: z.string().default("[]"),
 
+  MARGIN_ENABLED: z.coerce.boolean().default(false),
+  MARGIN_LEVERAGE: z.coerce.number().min(1).max(10).default(2),
+  MARGIN_MAX_SHORT_PCT: z.coerce.number().min(0).max(100).default(10),
+  MARGIN_SYMBOLS: z.string().default(""),
+  MARGIN_STOP_LOSS_PCT: z.coerce.number().min(0).default(3),
+  MARGIN_TAKE_PROFIT_PCT: z.coerce.number().min(0).default(6),
+  RSI_SHORT_ENTRY_FLOOR: z.coerce.number().min(0).max(100).default(65),
+
   TRIGGERS: z.string().default("[]"),
 
   STRATEGY_POOLS: z.string().default("{}"),
@@ -77,6 +85,15 @@ const envSchema = z.object({
 export interface DcaLevel {
   belowPct: number;
   buyPct: number;
+}
+
+export interface MarginConfig {
+  enabled: boolean;
+  leverage: number;
+  maxShortPct: number;
+  symbols: string[];
+  stopLossPct: number;
+  takeProfitPct: number;
 }
 
 export interface BotConfig {
@@ -124,6 +141,8 @@ export interface BotConfig {
   dcaEnabled: boolean;
   dcaLevels: DcaLevel[];
   dcaMaxOrdersPerPosition: number;
+  margin: MarginConfig;
+  rsiShortEntryFloor: number;
   triggers: TriggerRule[];
   strategyPools: Record<string, StrategySpec>;
   aiAdvisor: { apiKey: string; baseUrl: string; model: string; minIntervalMs: number; contextBars: number } | null;
@@ -230,6 +249,22 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
   if (usesAi && !aiApiKey) {
     throw new Error('STRATEGY_POOLS uses the "ai" strategy but USER_LLM_API_KEY is not set');
   }
+  const marginSymbols = parsed.MARGIN_SYMBOLS.split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  for (const symbol of marginSymbols) {
+    if (!symbolKeys.has(symbol)) {
+      throw new Error(`MARGIN_SYMBOLS references symbol "${symbol}" which is not in SYMBOLS`);
+    }
+  }
+  const margin: MarginConfig = {
+    enabled: parsed.MARGIN_ENABLED,
+    leverage: parsed.MARGIN_LEVERAGE,
+    maxShortPct: parsed.MARGIN_MAX_SHORT_PCT,
+    symbols: marginSymbols,
+    stopLossPct: parsed.MARGIN_STOP_LOSS_PCT,
+    takeProfitPct: parsed.MARGIN_TAKE_PROFIT_PCT,
+  };
   return {
     botName: parsed.BOT_NAME.trim() || "default",
     nodeEnv: parsed.NODE_ENV,
@@ -275,6 +310,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     dcaEnabled: parsed.DCA_ENABLED,
     dcaLevels,
     dcaMaxOrdersPerPosition: parsed.DCA_MAX_ORDERS_PER_POSITION,
+    margin,
+    rsiShortEntryFloor: parsed.RSI_SHORT_ENTRY_FLOOR,
     triggers,
     strategyPools,
     aiAdvisor: aiApiKey

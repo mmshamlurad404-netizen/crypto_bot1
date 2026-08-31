@@ -219,6 +219,29 @@ limits) and maps the reply to a BUY/SELL/HOLD intent:
   LLM errors always fall back to a no-op HOLD.
 - The backtester never invokes the LLM (`ai` is unavailable there).
 
+## Short selling via margin
+
+Set `MARGIN_ENABLED=true` to let the hybrid strategy open **shorts** and **cover**
+them through the Nobitex margin API (`/v2/margin`). It is OFF by default and
+carries real leverage/margin risk, so enable it only with full understanding.
+
+When enabled, for a symbol that has no open position:
+
+- **SHORT** when RSI ≥ `RSI_OVERBOUGHT` and sentiment ≤ `-SENTIMENT_ENTRY_THRESHOLD`
+  (the bearish mirror of the long entry). The order is sized as `MARGIN_MAX_SHORT_PCT`
+  of equity (volatility-shrunk) and passes the same risk gates as buys, except the
+  RSI gate is a floor (`RSI_SHORT_ENTRY_FLOOR`).
+- **COVER** while holding a short when sentiment turns ≥ `SENTIMENT_ENTRY_THRESHOLD`,
+  RSI drops to `RSI_ENTRY_UPPER`, or a margin exit triggers — all inverted:
+  stop-loss when price rises `MARGIN_STOP_LOSS_PCT` above entry, take-profit when it
+  falls `MARGIN_TAKE_PROFIT_PCT` below entry, and trailing stops tracking the lowest
+  price instead of the peak.
+
+Only one position (long or short) may be open per symbol at a time. Shorts are
+tracked in the `margin_positions` table; realized short PnL is `(entry − exit) × amount`
+and is credited back to the quote wallet. `MARGIN_SYMBOLS` restricts which symbols
+may short (empty = all). The backtester supports short round trips too.
+
 The backtester replays the pool assignment for the symbol under test.
 
 ## Signals framework

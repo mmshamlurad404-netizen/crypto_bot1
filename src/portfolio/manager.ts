@@ -1,7 +1,7 @@
 import { AuditDb } from "../db.js";
 import { NobitexClient } from "../exchange/nobitex.js";
 import { PriceFeed } from "../market/priceFeed.js";
-import { SymbolPair, PortfolioState, WalletBalance, PositionWithValue, QuoteCurrency } from "../types.js";
+import { SymbolPair, PortfolioState, WalletBalance, PositionWithValue, MarginPositionWithValue, QuoteCurrency } from "../types.js";
 
 export class PortfolioManager {
   private db: AuditDb;
@@ -85,7 +85,28 @@ export class PortfolioManager {
       if (price === null) continue;
       total += balance * price;
     }
-    return total;
+    return total + this.marginUnrealizedPnl();
+  }
+
+  marginPositionsWithValue(): MarginPositionWithValue[] {
+    const positions = this.db.openMarginPositions();
+    const result: MarginPositionWithValue[] = [];
+    for (const pos of positions) {
+      const price = this.priceFeed.getLatestPrice(pos.symbol);
+      if (price === null) continue;
+      const marketValue = pos.amount * price;
+      const unrealizedPnl = (pos.entryPrice - price) * pos.amount;
+      result.push({ ...pos, marketValue, unrealizedPnl });
+    }
+    return result;
+  }
+
+  totalMarginPositionsValue(): number {
+    return this.marginPositionsWithValue().reduce((a, p) => a + p.marketValue, 0);
+  }
+
+  private marginUnrealizedPnl(): number {
+    return this.marginPositionsWithValue().reduce((a, p) => a + p.unrealizedPnl, 0);
   }
 
   positionValue(pair: SymbolPair): number {
@@ -119,9 +140,10 @@ export class PortfolioManager {
 
   state(): PortfolioState {
     const equity = this.equity();
-    const positionsValue = this.totalPositionsValue();
     const positions = this.openPositionsWithValue();
-    const unrealizedPnl = positions.reduce((a, p) => a + p.unrealizedPnl, 0);
+    const marginPositions = this.marginPositionsWithValue();
+    const positionsValue = this.totalPositionsValue() + this.totalMarginPositionsValue();
+    const unrealizedPnl = positions.reduce((a, p) => a + p.unrealizedPnl, 0) + marginPositions.reduce((a, p) => a + p.unrealizedPnl, 0);
     const cash = this.getBalance(this.quote);
     return {
       equity,
@@ -130,6 +152,7 @@ export class PortfolioManager {
       unrealizedPnl,
       realizedPnlToday: this.realizedToday,
       positions,
+      marginPositions,
       holdings: this.getHoldings(),
     };
   }
@@ -164,6 +187,27 @@ export class PortfolioManager {
         this.db.setMeta(`day:${this.dayKey(new Date(this.now()))}:realized_pnl`, String(this.realizedToday));
       }
     }
+  }
+
+  applyMarginOpen(pair: SymbolPair, amount: number, price: number, fee: number, orderId: number | null, leverage: number): void {
+    this.db.insertMarginPosition({
+      symbol: pair.key,
+      openTs: new Date(this.now()).toISOString(),
+      entryPrice: price,
+      amount,
+      leverage,
+      orderId,
+    });
+  }
+
+  applyMarginClose(pair: SymbolPair, amount: number, price: number, fee: number, orderId: number | null): void {
+    const pos = this.db.getOpenMarginPosition(pair.key);
+    if (!pos) return;
+    const realized = (pos.entryPrice - price) * Math.min(amount, pos.amount);
+    this.db.closeMarginPosition(pos.id, new Date(this.now()).toISOString(), price, realized, "covered");
+    this.holdings.set(pair.dst, (this.getBalance(pair.dst) ?? 0) + realized);
+    this.realizedToday += realized;
+    this.db.setMeta(`day:${this.dayKey(new Date(this.now()))}:realized_pnl`, String(this.realizedToday));
   }
 
   private dayKey(d: Date): string {

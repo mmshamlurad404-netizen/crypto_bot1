@@ -180,4 +180,59 @@ export class NobitexClient {
       auth: true,
     });
   }
+
+  async marginBalance(currency: string): Promise<{ status: string; marginTradesBalance: Record<string, unknown>[] }> {
+    return this.request({
+      path: "/v2/margin",
+      method: "POST",
+      body: { currency },
+      auth: true,
+    });
+  }
+
+  async marginAddOrder(params: {
+    type: "buy" | "sell";
+    execution: "market" | "limit";
+    srcCurrency: string;
+    dstCurrency: string;
+    amount: string;
+    price?: string;
+    leverage: number;
+    clientOrderId?: string;
+  }): Promise<{ status: string; order?: Record<string, unknown>; code?: string; message?: string }> {
+    const body: Record<string, string | number> = {
+      type: params.type,
+      execution: params.execution,
+      srcCurrency: params.srcCurrency,
+      dstCurrency: params.dstCurrency,
+      amount: params.amount,
+      leverage: params.leverage,
+    };
+    if (params.price) body.price = params.price;
+    if (params.clientOrderId) body.clientOrderId = params.clientOrderId;
+    return this.request<{ status: string; order?: Record<string, unknown>; code?: string; message?: string }>({
+      path: "/v2/margin/orders/add",
+      method: "POST",
+      body,
+      auth: true,
+    });
+  }
+
+  async marginOrderStatus(input: { id?: number; srcCurrency: string; dstCurrency: string }): Promise<{ status: string; order?: Record<string, unknown>; code?: string; message?: string }> {
+    return this.request({
+      path: "/v2/margin/orders/status",
+      method: "POST",
+      body: input,
+      auth: true,
+    });
+  }
+
+  async marginCloseOrder(params: { srcCurrency: string; dstCurrency: string; amount: string }): Promise<{ status: string; closeOrder?: Record<string, unknown>; code?: string; message?: string }> {
+    return this.request({
+      path: "/v2/margin/orders/close",
+      method: "POST",
+      body: params,
+      auth: true,
+    });
+  }
 }

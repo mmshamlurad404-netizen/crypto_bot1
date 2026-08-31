@@ -40,23 +40,23 @@ build: `tsc -p tsconfig.json` → dist/ | test: `tsx --test tests/*.test.ts` | r
 src/index.ts — composition root; wiring, poll loop, signal logging, signal handlers
 src/config.ts — zod env schema → typed BotConfig; SYMBOLS parsing and validation
 src/types.ts — shared domain types (SymbolPair, SignalDecision, Position, OrderRecord...)
-src/db.ts — AuditDb: 10 tables, indexes, all insert/query methods, migrations on open
+src/db.ts — AuditDb: 11 tables (incl. margin_positions), indexes, all insert/query methods, migrations on open
 src/logger.ts — pino logger, pino-pretty transport at debug/trace
 src/indicators.ts — RSI (Wilder smoothing), volatility (60-bar log returns), SMA/EMA (null on insufficient data)
 src/config/pools.ts — parseStrategyPools (symbol -> "hybrid"|"ai"|DSL) + buildStrategyPool -> Map<symbol, StrategyLike>; StrategyLike.evaluate is promise-capable; shared hybrid/ai instances; StrategyPoolDeps.ai
-src/exchange/nobitex.ts — REST client: stats, trades, wallets, addOrder/status/cancel; per-path public throttle
+src/exchange/nobitex.ts — REST client: stats, trades, wallets, addOrder/status/cancel, margin (/v2/margin balance, /v2/margin/orders/add|status|close); per-path public throttle
 src/market/priceFeed.ts — in-memory PricePoint series, seed from recent trades, poll stats
 src/sentiment/engine.ts — confidence × time-decay weighted sentiment score
 src/sentiment/server.ts — HTTP server: /healthz, POST /api/v1/sentiment, POST /api/v1/tradingview (Bearer auth); validates payloads then submit()s SignalIntents to the broker; JSONL file poller
 src/signals/broker.ts — SignalBroker: sentiment intents -> registered subscriber (returns result), trade intents -> bounded per-symbol FIFO drained via shiftTrade; sources sentiment-webhook|sentiment-feed|tradingview|manual|scheduled
-src/strategy/hybrid.ts — evaluate(): warmup gate, exits, then sentiment+RSI entry with risk veto
+src/strategy/hybrid.ts — HybridStrategy evaluate(): warmup gate, exits, then sentiment+RSI entry with risk veto; SHORT (RSI>=overbought + sentiment<=-entryThreshold) and COVER (sentiment turn / RSI<=entry ceiling / margin stop/tp/trailing) when margin enabled
 src/strategy/dsl.ts — DslStrategy: zod-validated entry/exit condition trees (rsi/volatility/sentiment/price vs SMA|EMA, and/or/not); same risk gates + DCA; DSL entries skip hybrid RSI ceiling
 src/strategy/ai.ts — AiAdvisorStrategy: async LLM-driven BUY/SELL/HOLD via HttpLlmClient (OpenAI-compatible /chat/completions); snapshot = bars+indicators+sentiment+position+riskLimits; minIntervalMs throttle; warmup; errors→HOLD; BUY passes risk.skipRsiGate, SELL needs open position; parseAdvice extracts+clamps the JSON reply
 src/strategy/dca.ts — DcaLadder: sorted {belowPct,buyPct} levels consumed in order per position; consumed only after risk approval; maxOrders cap
 src/triggers/engine.ts — TriggerEngine: edge-triggered rules (rsi/price/sentiment below/above) -> notify/halt; per-symbol evaluation before strategy
-src/risk/manager.ts — evaluateBuy gate chain, volatility sizing, stop-loss/take-profit, trailing stops, evaluateDca (skips open-position gate), halt state; evaluateBuy accepts {skipRsiGate} for DSL entries
-src/portfolio/manager.ts — dry-run virtual holdings vs live wallets; applyTrade PnL accounting
-src/execution/executor.ts — fills at best bid/ask, dry-run simulation or live addOrder, fee calc
+src/risk/manager.ts — evaluateBuy gate chain, volatility sizing, stop-loss/take-profit, trailing stops, evaluateDca (skips open-position gate), halt state; evaluateBuy accepts {skipRsiGate} for DSL entries; evaluateShort + margin stop/tp/trailing (inverted); hasAnyOpenPosition blocks both directions
+src/portfolio/manager.ts — dry-run virtual holdings vs live wallets; applyTrade PnL accounting; margin short pnl (unrealized in equity, realized credited to quote), applyMarginOpen/applyMarginClose
+src/execution/executor.ts — fills at best bid/ask, dry-run simulation or live addOrder, fee calc; execute(mode: spot|margin) + openShort/coverShort via /v2/margin/orders/add|close
 src/alerts/telegram.ts — sendMessage with HTML, logs every alert to DB
 src/alerts/report.ts — DailyReporter: snapshot, HTML report, prev-day equity meta
 src/backtest/data.ts — loadHistory: paged /market/udf/history fetch (exchange keeps ~500 bars) + loadSentimentFile

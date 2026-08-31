@@ -57,25 +57,34 @@ export class Executor {
   }
 
   async buy(pair: SymbolPair, amount: number, kind: "entry" | "dca" = "entry"): Promise<FillResult | null> {
-    return this.execute(pair, "buy", amount, kind);
+    return this.execute(pair, "buy", amount, kind, "spot");
   }
 
   async sell(pair: SymbolPair, amount: number): Promise<FillResult | null> {
-    return this.execute(pair, "sell", amount, "exit");
+    return this.execute(pair, "sell", amount, "exit", "spot");
   }
 
-  private async execute(pair: SymbolPair, side: "buy" | "sell", amount: number, kind: "entry" | "dca" | "exit" = "entry"): Promise<FillResult | null> {
+  async openShort(pair: SymbolPair, amount: number, leverage: number): Promise<FillResult | null> {
+    return this.execute(pair, "sell", amount, "short_open", "margin", leverage);
+  }
+
+  async coverShort(pair: SymbolPair, amount: number): Promise<FillResult | null> {
+    return this.execute(pair, "buy", amount, "short_cover", "margin");
+  }
+
+  private async execute(
+    pair: SymbolPair,
+    side: "buy" | "sell",
+    amount: number,
+    kind: string,
+    mode: "spot" | "margin",
+    leverage: number = 2
+  ): Promise<FillResult | null> {
     const ts = new Date().toISOString();
     const clientOrderId = this.clientOrderId();
 
-    let fillPrice: number | null = null;
-    if (this.dryRun) {
-      const { ask, bid } = this.priceFeed.getBestPrices(pair.key);
-      fillPrice = side === "buy" ? ask ?? bid : bid ?? ask;
-    } else {
-      const { ask, bid } = this.priceFeed.getBestPrices(pair.key);
-      fillPrice = side === "buy" ? ask ?? bid : bid ?? ask;
-    }
+    const { ask, bid } = this.priceFeed.getBestPrices(pair.key);
+    const fillPrice = side === "buy" ? ask ?? bid : bid ?? ask;
     if (fillPrice === null) {
       this.db.insertOrder({
         ts,
@@ -91,7 +100,7 @@ export class Executor {
         error: "no market price available",
         kind,
       });
-      this.logger.warn({ symbol: pair.key, side }, "execution skipped: no price available");
+      this.logger.warn({ symbol: pair.key, side, mode }, "execution skipped: no price available");
       return null;
     }
 
@@ -101,17 +110,28 @@ export class Executor {
     let filledAmount = amount;
     if (!this.dryRun) {
       try {
-        const resp = await this.client.addOrder({
-          type: side,
-          execution: "market",
-          srcCurrency: pair.src,
-          dstCurrency: pair.dst,
-          amount: this.roundAmount(amount),
-          clientOrderId,
-        });
+        const resp =
+          mode === "margin"
+            ? await this.client.marginAddOrder({
+                type: side,
+                execution: "market",
+                srcCurrency: pair.src,
+                dstCurrency: pair.dst,
+                amount: this.roundAmount(amount),
+                leverage,
+                clientOrderId,
+              })
+            : await this.client.addOrder({
+                type: side,
+                execution: "market",
+                srcCurrency: pair.src,
+                dstCurrency: pair.dst,
+                amount: this.roundAmount(amount),
+                clientOrderId,
+              });
         if (resp.status !== "ok" || !resp.order) {
           error = resp.message ?? resp.code ?? "order rejected";
-          this.logger.error({ symbol: pair.key, side, code: resp.code, message: resp.message }, "order rejected by exchange");
+          this.logger.error({ symbol: pair.key, side, mode, code: resp.code, message: resp.message }, "order rejected by exchange");
         } else {
           nobitexOrderId = String(resp.order.id);
           const matched = Number(resp.order.matchedAmount ?? 0);
@@ -132,7 +152,7 @@ export class Executor {
         }
       } catch (err) {
         error = err instanceof NobitexError ? err.message : (err as Error).message;
-        this.logger.error({ symbol: pair.key, side, error }, "order request failed");
+        this.logger.error({ symbol: pair.key, side, mode, error }, "order request failed");
       }
     }
 
@@ -167,11 +187,19 @@ export class Executor {
       total,
       fee,
     });
-    this.portfolio.applyTrade(pair, side, filledAmount, finalPrice, fee, orderId);
+    if (mode === "margin") {
+      if (side === "sell") {
+        this.portfolio.applyMarginOpen(pair, filledAmount, finalPrice, fee, orderId, leverage);
+      } else {
+        this.portfolio.applyMarginClose(pair, filledAmount, finalPrice, fee, orderId);
+      }
+    } else {
+      this.portfolio.applyTrade(pair, side, filledAmount, finalPrice, fee, orderId);
+    }
     this.risk.recordTrade(pair);
 
     this.logger.info(
-      { symbol: pair.key, side, amount: filledAmount, price: finalPrice, total, fee, dryRun: this.dryRun },
+      { symbol: pair.key, side, amount: filledAmount, price: finalPrice, total, fee, mode, dryRun: this.dryRun },
       "executed fill"
     );
     return { orderId, symbol: pair.key, side, amount: filledAmount, price: finalPrice, total, fee, simulated: this.dryRun };

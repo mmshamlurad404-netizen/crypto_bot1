@@ -84,6 +84,9 @@ export function startBot(config: BotConfig, baseLogger: Logger): BotRuntime {
     trailingStopActivatePct: config.trailingStopActivatePct,
     trailingTpPct: config.trailingTpPct,
     trailingTpActivatePct: config.trailingTpActivatePct,
+    rsiShortEntryFloor: config.rsiShortEntryFloor,
+    marginStopLossPct: config.margin.stopLossPct,
+    marginTakeProfitPct: config.margin.takeProfitPct,
   });
   const executor = new Executor(db, client, priceFeed, portfolio, risk, config.dryRun, config.feePct, logger);
   const dcaLadder = new DcaLadder({
@@ -109,6 +112,7 @@ export function startBot(config: BotConfig, baseLogger: Logger): BotRuntime {
     },
     dca: dcaLadder,
     ai: config.aiAdvisor,
+    margin: config.margin,
   });
   const notifier = new TelegramNotifier(db, config.telegramBotToken, config.telegramChatId, logger);
   const reporter = new DailyReporter(db, portfolio, priceFeed, sentimentEngine, notifier, config.symbols, logger);
@@ -183,6 +187,43 @@ export function startBot(config: BotConfig, baseLogger: Logger): BotRuntime {
       const fill = await executor.sell(pair, pos.amount);
       if (fill) {
         await notifier.sendTradeAlert(pair.key, "sell", fill.amount, fill.price, fill.total, fill.simulated, decision.reason);
+      }
+    } else if (decision.action === "SHORT") {
+      const price = decision.price ?? priceFeed.getLatestPrice(pair.key);
+      if (!price) return;
+      const equity = portfolio.equity();
+      const sizePct = decision.sizePct ?? config.margin.maxShortPct;
+      const budget = equity * (sizePct / 100);
+      const amount = budget / price;
+      if (!config.tradingEnabled && !config.dryRun) {
+        logger.info({ symbol: pair.key, action: "SHORT", amount, price, reason: decision.reason }, "signal generated (trading disabled)");
+        db.insertSignal({
+          ts: new Date().toISOString(),
+          symbol: pair.key,
+          action: "SHORT",
+          rsi: decision.rsi,
+          sentiment: decision.sentiment,
+          price,
+          seriesLen: priceFeed.getSeries(pair.key).length,
+          reason: decision.reason,
+          details: "trading disabled, signal recorded only",
+        });
+        return;
+      }
+      const fill = await executor.openShort(pair, amount, config.margin.leverage);
+      if (fill) {
+        await notifier.sendTradeAlert(pair.key, "sell", fill.amount, fill.price, fill.total, fill.simulated, decision.reason);
+      }
+    } else if (decision.action === "COVER") {
+      const pos = db.getOpenMarginPosition(pair.key);
+      if (!pos) return;
+      if (!config.tradingEnabled && !config.dryRun) {
+        logger.info({ symbol: pair.key, action: "COVER", amount: pos.amount, reason: decision.reason }, "signal generated (trading disabled)");
+        return;
+      }
+      const fill = await executor.coverShort(pair, pos.amount);
+      if (fill) {
+        await notifier.sendTradeAlert(pair.key, "buy", fill.amount, fill.price, fill.total, fill.simulated, decision.reason);
       }
     }
   }
@@ -304,7 +345,7 @@ export function startBot(config: BotConfig, baseLogger: Logger): BotRuntime {
           }
         }
         const decision = await strategyPool.get(pair.key)!.evaluate(pair);
-        if (decision.action === "BUY" || decision.action === "SELL") {
+        if (decision.action === "BUY" || decision.action === "SELL" || decision.action === "SHORT" || decision.action === "COVER") {
           db.insertSignal({
             ts: new Date().toISOString(),
             symbol: decision.symbol,

@@ -81,7 +81,20 @@ Basis: `.context/gap-analysis.md` priority ranking. Scope = on-prem, Nobitex-onl
 - Docs: `.env.example` AI-advisor block + README "AI advisor" section.
 - Tests `tests/ai.test.ts` (9: parseAdvice, BUY-approved/risk-blocked/position-open, SELL-with/without position, HOLD, throttle, warmup+error, pools+config validation); suite 108/108, typecheck + build clean.
 
-### P3-3 Short selling via margin API — PENDING (default OFF, heavy testing)
+### P3-3 Short selling via margin API — DONE (2026-08-31)
+- Config (all default OFF): `MARGIN_ENABLED` (false), `MARGIN_LEVERAGE` (2), `MARGIN_MAX_SHORT_PCT` (10), `MARGIN_SYMBOLS` ("" = all), `MARGIN_STOP_LOSS_PCT`/`MARGIN_TAKE_PROFIT_PCT`, `RSI_SHORT_ENTRY_FLOOR` (65) → `BotConfig.margin: MarginConfig` + `rsiShortEntryFloor`.
+- Types: `SignalAction` += `SHORT`|`COVER`; `MarginPosition`/`MarginPositionWithValue`; `PortfolioState.marginPositions`.
+- DB: `margin_positions` table + insert/open/close/closedBetween methods.
+- Exchange: `marginBalance`, `marginAddOrder`, `marginOrderStatus`, `marginCloseOrder` (`/v2/margin`, `/v2/margin/orders/add|status|close`).
+- Risk: `evaluateShort` (mirror of `evaluateBuy` with inverted RSI floor; blocks when ANY position open via `hasAnyOpenPosition` — spot BUY also blocked while short open); `checkMarginStopLoss`/`checkMarginTakeProfit` (inverted); `checkMarginTrailingStops` (trough-tracked); optional config fields with constructor defaults.
+- Portfolio: short unrealized pnl in `equity()`, margin value in `positionsValue`, `marginPositionsWithValue()`; `applyMarginOpen` inserts the short; `applyMarginClose` realizes `(entry−price)×amount` and credits the quote wallet (so realized short PnL shows up in equity).
+- Executor: `execute` gained a `mode: spot|margin` + `kind: string`; `openShort`/`coverShort` route to `marginAddOrder`/`applyMarginOpen`/`applyMarginClose`.
+- Strategy: `HybridStrategy` takes a `MarginStrategyConfig`; emits SHORT (RSI≥overbought + sentiment≤−entry threshold) and COVER (sentiment turn / RSI≤entry ceiling / margin stop/tp/trailing).
+- Pool + index.ts: `StrategyPoolDeps.margin`; `executeDecision` SHORT/COVER branches; tick records them in `signals`.
+- Backtest: `runBacktest` handles SHORT/COVER round trips (shorts in `roundTrips`, `sells`/`buys` map to open/cover).
+- Docs: `.env.example` margin block + README "Short selling via margin".
+- Tests `tests/margin.test.ts` (10: config, risk gates/blocked-positions, margin stop/tp, portfolio equity+realized, executor dry-run + failed margin order, strategy SHORT/COVER + stop-loss cover, backtest profitable short); suite 118/118, typecheck + build clean.
+
 ### P3-4 Market making / arbitrage — PENDING (highest complexity, lowest priority)
 
 ## Explicitly NOT planned

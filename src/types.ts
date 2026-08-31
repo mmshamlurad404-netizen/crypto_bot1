@@ -28,7 +28,7 @@ export interface PricePoint {
   price: number;
 }
 
-export type SignalAction = "BUY" | "SELL" | "HOLD";
+export type SignalAction = "BUY" | "SELL" | "HOLD" | "SHORT" | "COVER";
 
 export interface SignalDecision {
   symbol: string;
@@ -107,10 +107,31 @@ export interface PortfolioState {
   unrealizedPnl: number;
   realizedPnlToday: number;
   positions: PositionWithValue[];
+  marginPositions: MarginPositionWithValue[];
   holdings: Map<string, number>;
 }
 
 export interface PositionWithValue extends Position {
+  marketValue: number;
+  unrealizedPnl: number;
+}
+
+export interface MarginPosition {
+  id: number;
+  symbol: string;
+  leverage: number;
+  openTs: string;
+  entryPrice: number;
+  amount: number;
+  status: "open" | "closed";
+  closeTs: string | null;
+  closePrice: number | null;
+  realizedPnl: number | null;
+  exitReason: string | null;
+  orderId: number | null;
+}
+
+export interface MarginPositionWithValue extends MarginPosition {
   marketValue: number;
   unrealizedPnl: number;
 }

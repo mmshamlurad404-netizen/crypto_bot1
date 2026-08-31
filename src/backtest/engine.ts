@@ -101,6 +101,9 @@ export async function runBacktest(args: RunBacktestArgs): Promise<BacktestResult
       trailingStopActivatePct: config.trailingStopActivatePct,
       trailingTpPct: config.trailingTpPct,
       trailingTpActivatePct: config.trailingTpActivatePct,
+      rsiShortEntryFloor: config.rsiShortEntryFloor,
+      marginStopLossPct: config.margin.stopLossPct,
+      marginTakeProfitPct: config.margin.takeProfitPct,
     },
     now
   );
@@ -126,6 +129,7 @@ export async function runBacktest(args: RunBacktestArgs): Promise<BacktestResult
     },
     dca: dcaLadder,
     ai: null,
+    margin: config.margin,
   });
   const strategy = strategyPool.get(pair.key)!;
 
@@ -195,6 +199,44 @@ export async function runBacktest(args: RunBacktestArgs): Promise<BacktestResult
           reason: decision.reason,
         });
         trades.push({ ts, symbol: pair.key, side: "sell", price: fillPrice, amount, total, fee, reason: decision.reason });
+      }
+    } else if (decision.action === "SHORT") {
+      const fillPrice = decision.price ?? bar.close;
+      const equity = portfolio.equity();
+      const sizePct = decision.sizePct ?? config.margin.maxShortPct;
+      const budget = equity * (sizePct / 100);
+      const amount = budget / fillPrice;
+      const ts = new Date(bar.ts).toISOString();
+      const total = amount * fillPrice;
+      const fee = total * (config.feePct / 100);
+      db.insertTrade({ ts, orderId: null, symbol: pair.key, side: "sell", amount, price: fillPrice, total, fee });
+      portfolio.applyMarginOpen(pair, amount, fillPrice, fee, null, config.margin.leverage);
+      risk.recordTrade(pair);
+      trades.push({ ts, symbol: pair.key, side: "sell", price: fillPrice, amount, total, fee, reason: decision.reason });
+    } else if (decision.action === "COVER") {
+      const pos = db.getOpenMarginPosition(pair.key);
+      if (pos) {
+        const fillPrice = decision.price ?? bar.close;
+        const amount = pos.amount;
+        const ts = new Date(bar.ts).toISOString();
+        const total = amount * fillPrice;
+        const fee = total * (config.feePct / 100);
+        const realized = (pos.entryPrice - fillPrice) * amount;
+        db.insertTrade({ ts, orderId: null, symbol: pair.key, side: "buy", amount, price: fillPrice, total, fee });
+        portfolio.applyMarginClose(pair, amount, fillPrice, fee, null);
+        risk.recordTrade(pair);
+        roundTrips.push({
+          symbol: pair.key,
+          openTs: pos.openTs,
+          closeTs: ts,
+          entryPrice: pos.entryPrice,
+          exitPrice: fillPrice,
+          amount,
+          realizedPnl: realized - fee,
+          fee,
+          reason: decision.reason,
+        });
+        trades.push({ ts, symbol: pair.key, side: "buy", price: fillPrice, amount, total, fee, reason: decision.reason });
       }
     }
 

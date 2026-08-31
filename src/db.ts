@@ -1,12 +1,29 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { Position, OrderRecord, TradeRecord } from "./types.js";
+import { Position, OrderRecord, TradeRecord, MarginPosition } from "./types.js";
 
 function mapPosition(row: Record<string, unknown>): Position {
   return {
     id: Number(row.id),
     symbol: String(row.symbol),
+    openTs: String(row.open_ts),
+    entryPrice: Number(row.entry_price),
+    amount: Number(row.amount),
+    status: row.status === "closed" ? "closed" : "open",
+    closeTs: row.close_ts != null ? String(row.close_ts) : null,
+    closePrice: row.close_price != null ? Number(row.close_price) : null,
+    realizedPnl: row.realized_pnl != null ? Number(row.realized_pnl) : null,
+    exitReason: row.exit_reason != null ? String(row.exit_reason) : null,
+    orderId: row.order_id != null ? Number(row.order_id) : null,
+  };
+}
+
+function mapMarginPosition(row: Record<string, unknown>): MarginPosition {
+  return {
+    id: Number(row.id),
+    symbol: String(row.symbol),
+    leverage: Number(row.leverage),
     openTs: String(row.open_ts),
     entryPrice: Number(row.entry_price),
     amount: Number(row.amount),
@@ -94,6 +111,21 @@ export class AuditDb {
         order_id INTEGER
       );
 
+      CREATE TABLE IF NOT EXISTS margin_positions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        symbol TEXT NOT NULL,
+        leverage INTEGER NOT NULL DEFAULT 1,
+        open_ts TEXT NOT NULL,
+        entry_price REAL NOT NULL,
+        amount REAL NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open',
+        close_ts TEXT,
+        close_price REAL,
+        realized_pnl REAL,
+        exit_reason TEXT,
+        order_id INTEGER
+      );
+
       CREATE TABLE IF NOT EXISTS risk_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ts TEXT NOT NULL,
@@ -147,6 +179,8 @@ export class AuditDb {
       CREATE INDEX IF NOT EXISTS idx_trades_ts ON trades(ts);
       CREATE INDEX IF NOT EXISTS idx_positions_symbol ON positions(symbol);
       CREATE INDEX IF NOT EXISTS idx_positions_close_ts ON positions(close_ts);
+      CREATE INDEX IF NOT EXISTS idx_margin_positions_symbol ON margin_positions(symbol);
+      CREATE INDEX IF NOT EXISTS idx_margin_positions_close_ts ON margin_positions(close_ts);
       CREATE INDEX IF NOT EXISTS idx_risk_ts ON risk_events(ts);
       CREATE INDEX IF NOT EXISTS idx_sentiment_ts ON sentiment_events(ts);
       CREATE INDEX IF NOT EXISTS idx_snapshots_ts ON portfolio_snapshots(ts);
@@ -275,6 +309,36 @@ export class AuditDb {
 
   updatePositionAmount(id: number, amount: number, entryPrice: number): void {
     this.db.prepare("UPDATE positions SET amount = ?, entry_price = ? WHERE id = ?").run(amount, entryPrice, id);
+  }
+
+  insertMarginPosition(pos: { symbol: string; openTs: string; entryPrice: number; amount: number; leverage: number; orderId: number | null }): number {
+    const res = this.db
+      .prepare("INSERT INTO margin_positions (symbol, leverage, open_ts, entry_price, amount, status, order_id) VALUES (?, ?, ?, ?, ?, 'open', ?)")
+      .run(pos.symbol, pos.leverage, pos.openTs, pos.entryPrice, pos.amount, pos.orderId);
+    return Number(res.lastInsertRowid);
+  }
+
+  openMarginPositions(): MarginPosition[] {
+    return (this.db.prepare("SELECT * FROM margin_positions WHERE status = 'open'").all() as Record<string, unknown>[]).map(mapMarginPosition);
+  }
+
+  getOpenMarginPosition(symbol: string): MarginPosition | null {
+    const row = this.db.prepare("SELECT * FROM margin_positions WHERE status = 'open' AND symbol = ?").get(symbol) as Record<string, unknown> | undefined;
+    return row ? mapMarginPosition(row) : null;
+  }
+
+  closedMarginPositionsBetween(fromTs: string, toTs: string): MarginPosition[] {
+    return (
+      this.db
+        .prepare("SELECT * FROM margin_positions WHERE status = 'closed' AND close_ts >= ? AND close_ts < ? ORDER BY close_ts ASC")
+        .all(fromTs, toTs) as Record<string, unknown>[]
+    ).map(mapMarginPosition);
+  }
+
+  closeMarginPosition(id: number, closeTs: string, closePrice: number, realizedPnl: number, exitReason: string): void {
+    this.db
+      .prepare("UPDATE margin_positions SET status = 'closed', close_ts = ?, close_price = ?, realized_pnl = ?, exit_reason = ? WHERE id = ?")
+      .run(closeTs, closePrice, realizedPnl, exitReason, id);
   }
 
   closePosition(id: number, closeTs: string, closePrice: number, realizedPnl: number, exitReason: string): void {

@@ -15,6 +15,13 @@ export interface StrategyConfigShape {
   sentimentExitThreshold: number;
 }
 
+export interface MarginStrategyConfig {
+  enabled: boolean;
+  leverage: number;
+  maxShortPct: number;
+  symbols: string[];
+}
+
 export class HybridStrategy {
   private db: AuditDb;
   private priceFeed: PriceFeed;
@@ -23,6 +30,7 @@ export class HybridStrategy {
   private risk: RiskManager;
   private config: StrategyConfigShape;
   private dca: DcaLadder;
+  private margin: MarginStrategyConfig | null;
 
   constructor(
     db: AuditDb,
@@ -31,7 +39,8 @@ export class HybridStrategy {
     portfolio: PortfolioManager,
     risk: RiskManager,
     config: StrategyConfigShape,
-    dca: DcaLadder = new DcaLadder({ enabled: false, levels: [], maxOrders: 0 })
+    dca: DcaLadder = new DcaLadder({ enabled: false, levels: [], maxOrders: 0 }),
+    margin: MarginStrategyConfig | null = null
   ) {
     this.db = db;
     this.priceFeed = priceFeed;
@@ -40,6 +49,13 @@ export class HybridStrategy {
     this.risk = risk;
     this.config = config;
     this.dca = dca;
+    this.margin = margin;
+  }
+
+  private shortEnabledFor(pair: SymbolPair): boolean {
+    const margin = this.margin;
+    if (!margin || !margin.enabled) return false;
+    return margin.symbols.length === 0 || margin.symbols.includes(pair.key);
   }
 
   evaluate(pair: SymbolPair): SignalDecision {
@@ -62,6 +78,29 @@ export class HybridStrategy {
     }
 
     const openPos = this.db.getOpenPosition(pair.key);
+    const openMargin = this.db.getOpenMarginPosition(pair.key);
+
+    if (openMargin) {
+      const sl = this.risk.checkMarginStopLoss(pair, priceNow);
+      if (sl.hit) {
+        return this.coverSignal(pair, rsi, sentiment, priceNow, sl.reason!);
+      }
+      const trail = this.risk.checkMarginTrailingStops(pair, priceNow);
+      if (trail.hit) {
+        return this.coverSignal(pair, rsi, sentiment, priceNow, trail.reason!);
+      }
+      const tp = this.risk.checkMarginTakeProfit(pair, priceNow);
+      if (tp.hit && !trail.tpArmed) {
+        return this.coverSignal(pair, rsi, sentiment, priceNow, tp.reason!);
+      }
+      if (sentimentCount > 0 && sentiment >= this.config.sentimentEntryThreshold) {
+        return this.coverSignal(pair, rsi, sentiment, priceNow, `sentiment ${sentiment.toFixed(2)} turned bullish >= ${this.config.sentimentEntryThreshold}`);
+      }
+      if (rsi !== null && rsi <= this.config.rsiEntryUpper) {
+        return this.coverSignal(pair, rsi, sentiment, priceNow, `RSI ${rsi.toFixed(1)} back below ${this.config.rsiEntryUpper}`);
+      }
+      return { symbol: pair.key, action: "HOLD", rsi, sentiment, price: priceNow, reason: "holding short position" };
+    }
 
     if (openPos) {
       const sl = this.risk.checkStopLoss(pair, priceNow);
@@ -107,6 +146,32 @@ export class HybridStrategy {
       return { symbol: pair.key, action: "HOLD", rsi, sentiment, price: priceNow, reason: "holding open position" };
     }
 
+    if (this.shortEnabledFor(pair)) {
+      const bearish = sentiment <= -this.config.sentimentEntryThreshold;
+      const overbought = rsi !== null && rsi >= this.config.rsiOverbought;
+      if (bearish && overbought) {
+        const sizePct = Math.min(this.risk.sizeByVolatility(volatility), this.margin!.maxShortPct);
+        const equity = this.portfolio.equity();
+        const budget = equity * (sizePct / 100);
+        const amount = budget / priceNow;
+        const orderValue = amount * priceNow;
+        const verdict = this.risk.evaluateShort(pair, orderValue, volatility, rsi);
+        if (verdict.allowed) {
+          return {
+            symbol: pair.key,
+            action: "SHORT",
+            rsi,
+            sentiment,
+            price: priceNow,
+            reason: `sentiment ${sentiment.toFixed(2)} bearish and RSI ${rsi.toFixed(1)} >= ${this.config.rsiOverbought} (overbought)`,
+            sizePct,
+          };
+        }
+        this.logSignal(pair, "HOLD", rsi, sentiment, priceNow, `short risk blocked: ${verdict.reason}`);
+        return { symbol: pair.key, action: "HOLD", rsi, sentiment, price: priceNow, reason: `short risk blocked: ${verdict.reason}`, sizePct };
+      }
+    }
+
     const bullishSentiment = sentiment >= this.config.sentimentEntryThreshold;
     const oversoldDip = rsi < this.config.rsiEntryUpper;
 
@@ -142,6 +207,10 @@ export class HybridStrategy {
 
   private sellSignal(pair: SymbolPair, rsi: number | null, sentiment: number, price: number, reason: string): SignalDecision {
     return { symbol: pair.key, action: "SELL", rsi, sentiment, price, reason };
+  }
+
+  private coverSignal(pair: SymbolPair, rsi: number | null, sentiment: number, price: number, reason: string): SignalDecision {
+    return { symbol: pair.key, action: "COVER", rsi, sentiment, price, reason };
   }
 
   private logSignal(pair: SymbolPair, action: string, rsi: number | null, sentiment: number, price: number | null, reason: string): void {

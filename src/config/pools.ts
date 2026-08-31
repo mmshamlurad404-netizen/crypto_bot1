@@ -4,7 +4,7 @@ import { PortfolioManager } from "../portfolio/manager.js";
 import { RiskManager } from "../risk/manager.js";
 import { SentimentEngine } from "../sentiment/engine.js";
 import { SymbolPair, SignalDecision } from "../types.js";
-import { HybridStrategy, StrategyConfigShape } from "../strategy/hybrid.js";
+import { HybridStrategy, MarginStrategyConfig, StrategyConfigShape } from "../strategy/hybrid.js";
 import { DslJson, parseDsl, DslStrategy } from "../strategy/dsl.js";
 import { AiAdvisorConfig, AiAdvisorStrategy, HttpLlmClient } from "../strategy/ai.js";
 import { DcaLadder } from "../strategy/dca.js";
@@ -56,11 +56,12 @@ export interface StrategyPoolDeps {
   strategyConfig: StrategyConfigShape;
   dca: DcaLadder;
   ai: AiAdvisorConfig | null;
+  margin?: MarginStrategyConfig | null;
 }
 
 export function buildStrategyPool(args: StrategyPoolDeps): Map<string, StrategyLike> {
-  const { pool, symbols, db, priceFeed, sentiment, portfolio, risk, strategyConfig, dca, ai } = args;
-  const hybrid = new HybridStrategy(db, priceFeed, sentiment, portfolio, risk, strategyConfig, dca);
+  const { pool, symbols, db, priceFeed, sentiment, portfolio, risk, strategyConfig, dca, ai, margin } = args;
+  const hybrid = new HybridStrategy(db, priceFeed, sentiment, portfolio, risk, strategyConfig, dca, margin ?? null);
   const aiStrategy = ai
     ? new AiAdvisorStrategy(db, priceFeed, sentiment, portfolio, risk, strategyConfig, new HttpLlmClient(ai.baseUrl, ai.apiKey, ai.model), {
         contextBars: ai.contextBars,

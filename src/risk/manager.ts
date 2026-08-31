@@ -28,6 +28,9 @@ export interface RiskConfigShape {
   trailingStopActivatePct: number;
   trailingTpPct: number;
   trailingTpActivatePct: number;
+  rsiShortEntryFloor?: number;
+  marginStopLossPct?: number;
+  marginTakeProfitPct?: number;
 }
 
 export interface TrailingCheck {
@@ -45,6 +48,13 @@ interface TrailingState {
   tpArmed: boolean;
 }
 
+interface MarginTrailingState {
+  positionId: number;
+  trough: number;
+  stopArmed: boolean;
+  tpArmed: boolean;
+}
+
 export class RiskManager {
   private db: AuditDb;
   private priceFeed: PriceFeed;
@@ -54,12 +64,18 @@ export class RiskManager {
   private lastTradeAt: Map<string, number> = new Map();
   private tradingHalted: string | null = null;
   private trailing: Map<string, TrailingState> = new Map();
+  private marginTrailing: Map<string, MarginTrailingState> = new Map();
 
   constructor(db: AuditDb, priceFeed: PriceFeed, portfolio: PortfolioManager, config: RiskConfigShape, now: () => number = Date.now) {
     this.db = db;
     this.priceFeed = priceFeed;
     this.portfolio = portfolio;
-    this.config = config;
+    this.config = {
+      ...config,
+      rsiShortEntryFloor: config.rsiShortEntryFloor ?? 65,
+      marginStopLossPct: config.marginStopLossPct ?? config.stopLossPct,
+      marginTakeProfitPct: config.marginTakeProfitPct ?? config.takeProfitPct,
+    };
     this.now = now;
   }
 
@@ -91,6 +107,14 @@ export class RiskManager {
     return this.db.getOpenPosition(pair.key) !== null;
   }
 
+  private hasOpenMarginPosition(pair: SymbolPair): boolean {
+    return this.db.getOpenMarginPosition(pair.key) !== null;
+  }
+
+  private hasAnyOpenPosition(pair: SymbolPair): boolean {
+    return this.hasOpenPosition(pair) || this.hasOpenMarginPosition(pair);
+  }
+
   private dailyTradeCount(): number {
     const dayStart = new Date(this.now()).toISOString().slice(0, 10);
     return this.db.countTradesToday(`${dayStart}T00:00:00.000Z`);
@@ -103,11 +127,15 @@ export class RiskManager {
   }
 
   evaluateBuy(pair: SymbolPair, orderValueInQuote: number, volatility: number | null, rsi: number | null, options: { skipRsiGate?: boolean } = {}): RiskVerdict {
-    return this.gates(pair, orderValueInQuote, volatility, rsi, false, options.skipRsiGate ?? false);
+    return this.gates(pair, orderValueInQuote, volatility, rsi, false, options.skipRsiGate ?? false, "long");
   }
 
   evaluateDca(pair: SymbolPair, orderValueInQuote: number, volatility: number | null, rsi: number | null): RiskVerdict {
-    return this.gates(pair, orderValueInQuote, volatility, rsi, true, false);
+    return this.gates(pair, orderValueInQuote, volatility, rsi, true, false, "long");
+  }
+
+  evaluateShort(pair: SymbolPair, orderValueInQuote: number, volatility: number | null, rsi: number | null, options: { skipRsiGate?: boolean } = {}): RiskVerdict {
+    return this.gates(pair, orderValueInQuote, volatility, rsi, false, options.skipRsiGate ?? false, "short");
   }
 
   private gates(
@@ -116,7 +144,8 @@ export class RiskManager {
     volatility: number | null,
     rsi: number | null,
     skipOpenPosition: boolean,
-    skipRsiGate: boolean
+    skipRsiGate: boolean,
+    direction: "long" | "short"
   ): RiskVerdict {
     const equity = this.portfolio.equity();
     const state = this.portfolio.state();
@@ -129,7 +158,7 @@ export class RiskManager {
       this.db.setMeta("prev_day_equity", String(this.db.latestSnapshot()!.equity));
     }
 
-    if (!skipOpenPosition && this.hasOpenPosition(pair)) {
+    if (!skipOpenPosition && this.hasAnyOpenPosition(pair)) {
       this.logEvent(pair.key, "blocked-position", "position already open", { symbol: pair.key });
       return { allowed: false, reason: "position already open for symbol", halted: false, sizePct: 0 };
     }
@@ -179,9 +208,18 @@ export class RiskManager {
       return { allowed: false, reason: msg, halted: false, sizePct: 0 };
     }
 
-    if (!skipRsiGate && rsi !== null && rsi > this.config.rsiEntryUpper) {
-      const msg = `RSI ${rsi.toFixed(1)} above entry ceiling ${this.config.rsiEntryUpper}`;
-      return { allowed: false, reason: msg, halted: false, sizePct: 0 };
+    if (!skipRsiGate) {
+      if (direction === "long") {
+        if (rsi !== null && rsi > this.config.rsiEntryUpper) {
+          const msg = `RSI ${rsi.toFixed(1)} above entry ceiling ${this.config.rsiEntryUpper}`;
+          return { allowed: false, reason: msg, halted: false, sizePct: 0 };
+        }
+      } else {
+        if (rsi === null || rsi < this.config.rsiShortEntryFloor!) {
+          const msg = `RSI ${rsi === null ? "n/a" : rsi.toFixed(1)} below short entry floor ${this.config.rsiShortEntryFloor}`;
+          return { allowed: false, reason: msg, halted: false, sizePct: 0 };
+        }
+      }
     }
 
     return { allowed: true, reason: null, halted: false, sizePct };
@@ -259,6 +297,76 @@ export class RiskManager {
 
   recordTrade(pair: SymbolPair): void {
     this.lastTradeAt.set(pair.key, this.now());
+  }
+
+  checkMarginStopLoss(pair: SymbolPair, price: number): { hit: boolean; reason: string | null } {
+    const pos = this.db.getOpenMarginPosition(pair.key);
+    if (!pos) return { hit: false, reason: null };
+    const stopPrice = pos.entryPrice * (1 + this.config.marginStopLossPct! / 100);
+    if (price >= stopPrice) {
+      return { hit: true, reason: `margin stop-loss ${this.config.marginStopLossPct}%` };
+    }
+    return { hit: false, reason: null };
+  }
+
+  checkMarginTakeProfit(pair: SymbolPair, price: number): { hit: boolean; reason: string | null } {
+    const pos = this.db.getOpenMarginPosition(pair.key);
+    if (!pos) return { hit: false, reason: null };
+    const tpPrice = pos.entryPrice * (1 - this.config.marginTakeProfitPct! / 100);
+    if (price <= tpPrice) {
+      return { hit: true, reason: `margin take-profit ${this.config.marginTakeProfitPct}%` };
+    }
+    return { hit: false, reason: null };
+  }
+
+  checkMarginTrailingStops(pair: SymbolPair, price: number): TrailingCheck {
+    const pos = this.db.getOpenMarginPosition(pair.key);
+    if (!pos) {
+      this.marginTrailing.delete(pair.key);
+      return { hit: false, reason: null, kind: null, stopArmed: false, tpArmed: false };
+    }
+    let st = this.marginTrailing.get(pair.key);
+    if (!st || st.positionId !== pos.id) {
+      st = { positionId: pos.id, trough: pos.entryPrice, stopArmed: false, tpArmed: false };
+      this.marginTrailing.set(pair.key, st);
+    }
+    if (price < st.trough) st.trough = price;
+
+    const trailStopPct = this.config.trailingStopPct;
+    if (!st.stopArmed && trailStopPct > 0 && price <= pos.entryPrice * (1 - this.config.trailingStopActivatePct / 100)) {
+      st.stopArmed = true;
+    }
+    if (st.stopArmed && trailStopPct > 0) {
+      const trailStop = st.trough * (1 + trailStopPct / 100);
+      if (price >= trailStop) {
+        return {
+          hit: true,
+          reason: `margin trailing stop ${trailStopPct}% (trough ${st.trough})`,
+          kind: "trailing_stop",
+          stopArmed: true,
+          tpArmed: st.tpArmed,
+        };
+      }
+    }
+
+    const trailTpPct = this.config.trailingTpPct;
+    if (!st.tpArmed && trailTpPct > 0 && price <= pos.entryPrice * (1 - this.config.trailingTpActivatePct / 100)) {
+      st.tpArmed = true;
+    }
+    if (st.tpArmed && trailTpPct > 0) {
+      const trailTp = st.trough * (1 + trailTpPct / 100);
+      if (price >= trailTp) {
+        return {
+          hit: true,
+          reason: `margin trailing take-profit ${trailTpPct}% (trough ${st.trough})`,
+          kind: "trailing_tp",
+          stopArmed: st.stopArmed,
+          tpArmed: true,
+        };
+      }
+    }
+
+    return { hit: false, reason: null, kind: null, stopArmed: st.stopArmed, tpArmed: st.tpArmed };
   }
 
   haltTrading(reason: string): void {
