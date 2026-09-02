@@ -244,6 +244,52 @@ may short (empty = all). The backtester supports short round trips too.
 
 The backtester replays the pool assignment for the symbol under test.
 
+## Market making (resting quotes)
+
+Set `MM_ENABLED=true` (and assign the symbol via `STRATEGY_POOLS='{"btc/rls":"mm"}'`)
+to run a **passive market maker** on the Nobitex order book instead of taking
+hybrid entries. It is OFF by default and only ever places limit orders:
+
+- With no inventory it quotes a **bid** at `mid − MM_SPREAD_PCT/2`; after a bid
+  fill it quotes both a bid and an **ask**, holding inventory to earn the spread.
+- Quotes are **inventory-aware**: the bid size shrinks as inventory notional
+  approaches `MM_MAX_INVENTORY_VALUE` (never overshooting it), so a fill cannot
+  push the book past the cap. `MM_ORDER_VALUE` is the per-side quote notional;
+  `MM_MIN_ORDER_VALUE` filters dust.
+- Unfilled quotes older than `MM_MAX_QUOTE_AGE_SECONDS` are cancelled and
+  re-quoted at the current mid. After any fill a `MM_COOLDOWN_SECONDS` pause
+  suppresses re-quoting.
+- If the mid drops `MM_STOP_LOSS_PCT` below cost basis, inventory is closed with
+  a market sell (`kind: mm_exit`).
+- Fills are detected by polling the resting orders and flow through the same
+  risk, portfolio, and audit pipeline as entries, so daily-loss caps and halts
+  still apply. Dry-run polls fill simulated limit orders at their limit price.
+
+## Cross-exchange arbitrage
+
+Set `ARB_ENABLED=true` and map local symbols to the external book in
+`ARB_SYMBOLS` (e.g. `{"btc/rls":"btcusdt"}`) to run **cross-exchange arbitrage**
+against a second exchange (`ARB_EXCHANGE`, currently `binance`). OFF by default.
+
+Each tick compares fee-adjusted round trips in both directions — buy on Nobitex
+at its ask, sell on the arb exchange at its bid (and the reverse) — using
+`ARB_FX_RATE` to convert external prices when the two books are quoted in
+different currencies (0 = treat as 1). When the best leg clears
+`ARB_MIN_PROFIT_PCT`, a round trip of `ARB_MAX_NOTIONAL_PCT` of equity is
+recorded:
+
+- **Dry-run** simulates both legs locally (orders + trades + round-trip PnL) and
+  never contacts the second exchange.
+- **Live** requires `USER_ARB_API_KEY`/`USER_ARB_API_SECRET` (config-validated)
+  and checks the sell-side wallet has the base asset before trading. Legs are
+  plain spot round trips on Nobitex's normal wallet — there is no separate
+  holding account — so a live reverse leg (sell what you do not yet hold on
+  Nobitex) is only attempted after the external buy fills; remote leg errors are
+  caught so a failure never crashes the tick. A `ARB_COOLDOWN_SECONDS` pause
+  follows each completed round trip.
+- Arbitrage is excluded from backtests; backtest coverage remains market-making
+  plus the hybrid/margin strategies.
+
 ## Signals framework
 
 All external intents flow through a single `SignalBroker` (`src/signals/broker.ts`)

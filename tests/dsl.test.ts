@@ -146,7 +146,7 @@ test("parseStrategyPools accepts hybrid strings and DSL objects", () => {
   const pools = parseStrategyPools('{"btc/rls":"hybrid","eth/rls":{"entry":{"sentiment_gt":0.2}}}');
   assert.equal(pools["btc/rls"]!.kind, "hybrid");
   assert.equal(pools["eth/rls"]!.kind, "dsl");
-  assert.throws(() => parseStrategyPools('{"btc/rls":"bogus"}'), /must be "hybrid", "ai" or a DSL/);
+  assert.throws(() => parseStrategyPools('{"btc/rls":"bogus"}'), /must be "hybrid", "ai", "mm", "arb" or a DSL/);
   assert.throws(() => parseStrategyPools("[1,2]"), /JSON object mapping symbol/);
   assert.throws(() => parseStrategyPools("nope"), /STRATEGY_POOLS must be a JSON object/);
 });

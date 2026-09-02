@@ -373,4 +373,8 @@ export class RiskManager {
     this.tradingHalted = reason;
     this.logEvent(null, "halt-trigger", reason, null);
   }
+
+  isHalted(): boolean {
+    return this.tradingHalted !== null;
+  }
 }

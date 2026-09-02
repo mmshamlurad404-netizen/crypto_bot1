@@ -210,6 +210,13 @@ export class PortfolioManager {
     this.db.setMeta(`day:${this.dayKey(new Date(this.now()))}:realized_pnl`, String(this.realizedToday));
   }
 
+  applyArbRoundTrip(pair: SymbolPair, amount: number, buyPrice: number, sellPrice: number, feeBuy: number, feeSell: number): void {
+    const profit = (sellPrice - buyPrice) * amount - feeBuy - feeSell;
+    this.holdings.set(pair.dst, (this.getBalance(pair.dst) ?? 0) + profit);
+    this.realizedToday += profit;
+    this.db.setMeta(`day:${this.dayKey(new Date(this.now()))}:realized_pnl`, String(this.realizedToday));
+  }
+
   private dayKey(d: Date): string {
     return d.toISOString().slice(0, 10);
   }

@@ -19,6 +19,24 @@ function mapPosition(row: Record<string, unknown>): Position {
   };
 }
 
+function mapOrder(row: Record<string, unknown>): OrderRecord {
+  return {
+    id: Number(row.id),
+    ts: String(row.ts),
+    clientOrderId: String(row.client_order_id),
+    symbol: String(row.symbol),
+    side: row.side === "sell" ? "sell" : "buy",
+    execution: row.execution === "limit" ? "limit" : "market",
+    kind: String(row.kind ?? "entry"),
+    amount: Number(row.amount),
+    price: row.price != null ? Number(row.price) : null,
+    status: ["new", "filled", "canceled", "failed"].includes(String(row.status)) ? (String(row.status) as OrderRecord["status"]) : "failed",
+    dryRun: Boolean(Number(row.dry_run)),
+    nobitexOrderId: row.nobitex_order_id != null ? String(row.nobitex_order_id) : null,
+    error: row.error != null ? String(row.error) : null,
+  };
+}
+
 function mapMarginPosition(row: Record<string, unknown>): MarginPosition {
   return {
     id: Number(row.id),
@@ -268,8 +286,15 @@ export class AuditDb {
   }
 
   getOrder(id: number): OrderRecord | null {
-    const row = this.db.prepare("SELECT * FROM orders WHERE id = ?").get(id) as OrderRecord | undefined;
-    return row ?? null;
+    const row = this.db.prepare("SELECT * FROM orders WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+    return row ? mapOrder(row) : null;
+  }
+
+  openOrders(symbol?: string): OrderRecord[] {
+    const rows = symbol
+      ? this.db.prepare("SELECT * FROM orders WHERE status = 'new' AND symbol = ? ORDER BY id ASC").all(symbol)
+      : this.db.prepare("SELECT * FROM orders WHERE status = 'new' ORDER BY id ASC").all();
+    return (rows as Record<string, unknown>[]).map(mapOrder);
   }
 
   insertTrade(trade: { ts: string; orderId: number | null; symbol: string; side: string; amount: number; price: number; total: number; fee: number }): number {

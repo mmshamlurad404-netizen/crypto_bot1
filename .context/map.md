@@ -1,21 +1,21 @@
 # Project Map — nobitex-sentiment-bot
-Updated: 2026-08-26
+Updated: 2026-09-02
 ## Shape
 ```
 /workspace
 ├── src/                    # TypeScript source (ESM, NodeNext)
 │   ├── alerts/             # Telegram notifier + daily HTML report
-│   ├── backtest/           # History replay engine + CLI (P1-1)
+│   ├── backtest/           # History replay engine + CLI; MM sim gateway (P3-4)
 │   ├── export/             # CSV export CLI (trades / closed positions) (P1-2)
-│   ├── exchange/           # Nobitex REST client (apiv2.nobitex.ir)
-│   ├── execution/          # Order placement: live vs simulated fills
+│   ├── exchange/           # Nobitex REST client + Binance arb client (P3-4)
+│   ├── execution/          # Order placement: live/simulated fills; OrderGateway for resting quotes
 │   ├── market/             # Per-symbol price series, poll + trade seeding
 │   ├── portfolio/          # Holdings, equity, PnL, position lifecycle
 │   ├── report/             # Performance analytics from audit DB (P1-2)
 │   ├── risk/               # Limit gates, volatility sizing, daily-loss halt, trailing stops
 │   ├── sentiment/          # HTTP webhook + JSONL feed + aggregation engine
 │   ├── signals/            # Unified SignalIntent bus: broker, FIFO trade intents (P2-3)
-│   ├── strategy/           # Hybrid RSI + sentiment entry/exit + DSL strategies + DCA ladder (P1-4, P2-1)
+│   ├── strategy/           # Hybrid + DSL + AI advisor + DCA + market making + arbitrage (P1-4..P3-4)
 │   ├── config/             # Strategy pool parsing + per-symbol build (P2-1)
 │   ├── triggers/           # Declarative rule DSL: condition -> notify/halt (P1-5)
 │   ├── index.ts            # Orchestrator: poll loop, execution, scheduling
@@ -40,12 +40,13 @@ build: `tsc -p tsconfig.json` → dist/ | test: `tsx --test tests/*.test.ts` | r
 src/index.ts — composition root; wiring, poll loop, signal logging, signal handlers
 src/config.ts — zod env schema → typed BotConfig; SYMBOLS parsing and validation
 src/types.ts — shared domain types (SymbolPair, SignalDecision, Position, OrderRecord...)
-src/db.ts — AuditDb: 11 tables (incl. margin_positions), indexes, all insert/query methods, migrations on open
+src/db.ts — AuditDb: 11 tables (incl. margin_positions), indexes, insert/query methods, migrations on open; orders.kind also mm_bid/mm_ask/mm_exit/arb; getOrder mapping fix + mapOrder/openOrders(symbol?)
 src/logger.ts — pino logger, pino-pretty transport at debug/trace
 src/indicators.ts — RSI (Wilder smoothing), volatility (60-bar log returns), SMA/EMA (null on insufficient data)
-src/config/pools.ts — parseStrategyPools (symbol -> "hybrid"|"ai"|DSL) + buildStrategyPool -> Map<symbol, StrategyLike>; StrategyLike.evaluate is promise-capable; shared hybrid/ai instances; StrategyPoolDeps.ai
-src/exchange/nobitex.ts — REST client: stats, trades, wallets, addOrder/status/cancel, margin (/v2/margin balance, /v2/margin/orders/add|status|close); per-path public throttle
-src/market/priceFeed.ts — in-memory PricePoint series, seed from recent trades, poll stats
+src/config/pools.ts — parseStrategyPools (symbol -> "hybrid"|"ai"|"mm"|"arb"|DSL) + buildStrategyPool -> Map<symbol, StrategyLike>; StrategyLike.evaluate promise-capable; shared hybrid/ai instances; StrategyPoolDeps.ai/.mm/.arb/.arbClient/.nobitexClient/.tradingActive/.dryRun/.feePct; optional MM/ARB fall back to hybrid
+src/exchange/nobitex.ts — REST client: stats, trades, wallets, addOrder/status/cancel, margin endpoints; per-path public throttle
+src/exchange/arb.ts — ArbExchangeClient interface + BinanceArbClient (fetch bookTicker; signed marketBuy/marketSell/getBalance require USER_ARB_* creds; 3s in-flight window)
+src/market/priceFeed.ts — in-memory PricePoint series, seed from recent trades, poll stats; setBar() feeds the backtest gateway
 src/sentiment/engine.ts — confidence × time-decay weighted sentiment score
 src/sentiment/server.ts — HTTP server: /healthz, POST /api/v1/sentiment, POST /api/v1/tradingview (Bearer auth); validates payloads then submit()s SignalIntents to the broker; JSONL file poller
 src/signals/broker.ts — SignalBroker: sentiment intents -> registered subscriber (returns result), trade intents -> bounded per-symbol FIFO drained via shiftTrade; sources sentiment-webhook|sentiment-feed|tradingview|manual|scheduled
@@ -53,14 +54,18 @@ src/strategy/hybrid.ts — HybridStrategy evaluate(): warmup gate, exits, then s
 src/strategy/dsl.ts — DslStrategy: zod-validated entry/exit condition trees (rsi/volatility/sentiment/price vs SMA|EMA, and/or/not); same risk gates + DCA; DSL entries skip hybrid RSI ceiling
 src/strategy/ai.ts — AiAdvisorStrategy: async LLM-driven BUY/SELL/HOLD via HttpLlmClient (OpenAI-compatible /chat/completions); snapshot = bars+indicators+sentiment+position+riskLimits; minIntervalMs throttle; warmup; errors→HOLD; BUY passes risk.skipRsiGate, SELL needs open position; parseAdvice extracts+clamps the JSON reply
 src/strategy/dca.ts — DcaLadder: sorted {belowPct,buyPct} levels consumed in order per position; consumed only after risk approval; maxOrders cap
+src/strategy/mm.ts — MarketMakingStrategy (StrategyLike, manage? per tick): bid-only when no inventory then both sides, inventory-aware skew capped by MM_MAX_INVENTORY_VALUE, stale-quote cancel+requote, fill cooldown, stop-loss market close
+src/strategy/arb.ts — ArbitrageStrategy (manage? per tick): bidirectional fee-adjusted round trips vs arb exchange, equity sizing, cooldown; dry-run simulates legs locally (never touches 2nd exchange), live checks sell-side balance, remote errors swallowed by caller
 src/triggers/engine.ts — TriggerEngine: edge-triggered rules (rsi/price/sentiment below/above) -> notify/halt; per-symbol evaluation before strategy
 src/risk/manager.ts — evaluateBuy gate chain, volatility sizing, stop-loss/take-profit, trailing stops, evaluateDca (skips open-position gate), halt state; evaluateBuy accepts {skipRsiGate} for DSL entries; evaluateShort + margin stop/tp/trailing (inverted); hasAnyOpenPosition blocks both directions
 src/portfolio/manager.ts — dry-run virtual holdings vs live wallets; applyTrade PnL accounting; margin short pnl (unrealized in equity, realized credited to quote), applyMarginOpen/applyMarginClose
-src/execution/executor.ts — fills at best bid/ask, dry-run simulation or live addOrder, fee calc; execute(mode: spot|margin) + openShort/coverShort via /v2/margin/orders/add|close
+src/execution/executor.ts — fills at best bid/ask, dry-run simulation or live addOrder, fee calc; execute(mode: spot|margin) + openShort/coverShort; implements OrderGateway (placeLimit/cancel/poll for resting limit orders; dry-run crosses-price fill; live poll immediate-fill/partial; applyLimitFill -> AuditDb + applyTrade + recordTrade); exports pairFromKey
+src/execution/gateway.ts — OrderGateway interface: getBestPrices/getLatestPrice/getBalance/placeLimit/cancel/poll/market
 src/alerts/telegram.ts — sendMessage with HTML, logs every alert to DB
 src/alerts/report.ts — DailyReporter: snapshot, HTML report, prev-day equity meta
 src/backtest/data.ts — loadHistory: paged /market/udf/history fetch (exchange keeps ~500 bars) + loadSentimentFile
-src/backtest/engine.ts — runBacktest: replays real strategy/risk/portfolio over bars on an injectable clock; async (await strategy.evaluate), ai:null (no LLM in backtests)
+src/backtest/engine.ts — runBacktest: replays real strategy/risk/portfolio over bars on an injectable clock; async (await strategy.evaluate), ai:null (no LLM); calls strategy.manage?.(pair) per tick
+src/backtest/gateway.ts — backtest OrderGateway over in-engine bars: MM limit fills at limit price intra-bar, market exits; feeds DB via portfolio+risk
 src/backtest/run.ts — CLI: --symbol/--days/--resolution/--sentiment/--sentiment-file/--json/--verbose
 src/report/metrics.ts — computeMetrics: win rate, profit factor, drawdown, Sharpe, exposure from audit DB
 src/export/trades.ts — CSV export CLI: --kind trades|positions, --from/--to (UTC dates); EPIPE-safe stdout
@@ -73,6 +78,8 @@ tests/dca.test.ts — DCA ladder order/caps, evaluateDca gate skip, strategy emi
 tests/triggers.test.ts — trigger edge firing/re-arm, condition types, config validation, halt wiring
 tests/signals.test.ts — SignalBroker: sentiment routing+result, rejections, trade FIFO/queue/drain, no-subscriber acceptance
 tests/dsl.test.ts — DSL node semantics, warmup, entry/exit, trend entry, pool parse/validation/assignment, config rejection
+tests/mm.test.ts — MM config parse (default off), executor-gateway limit resting/fill/cancel + trade record, real-gateway strategy: bid-only->both-sides, ask fill closes position, stop-loss market close, cooldown, stale-quote requote, max-inventory bid cap, disabled/monitor-only/halt
+tests/arb.test.ts — arb config parse + live-credential validation, forward + reverse direction dry-run round trips (never touches 2nd exchange), min-profit/cooldown, live sell-side inventory gate, monitor-only, halt, BinanceArbClient parse + cred requirement
 tests/bots.test.ts — loadConfigs: single default, N merged configs, inherited defaults, malformed BOTS_JSON rejections, port-0/BOT_NAME
 tests/tradingview.test.ts — TradingView alert parse (action/ticker/hold/reject), broker enqueue, HTTP endpoint enqueue+persist, auth/disabled/symbol errors, sentiment-through-broker
 tests/strategy.test.ts — hybrid strategy buy/hold/sell paths
@@ -83,15 +90,19 @@ tsconfig.json — strict ES2022 NodeNext build config
 ## Key symbols
 src/index.ts:35 main — composition root for N bots; starts one bot per config from loadConfigs(); SIGINT/SIGTERM stop all
 src/index.ts:38 startBot — full per-bot object graph + own tick/executeDecision/processTradingViewIntent; returns BotRuntime{name,stop}; webhook conditional on port>0
-src/index.ts:136 tick — core loop: priceFeed.poll → portfolio.refresh → strategy.evaluate → executeDecision
+src/index.ts:136 tick — core loop: priceFeed.poll → portfolio.refresh → strategy.evaluate → executeDecision → strategy.manage?.(pair) (MM/arb per-tick hook)
 src/index.ts:92 executeDecision — maps BUY/SELL decision to executor + trade alert; records signals when trading disabled
 src/index.ts:16 scheduleDaily — computes delay to HH:MM and starts daily reporter interval
 src/config.ts:5 envSchema — zod schema; every runtime knob validated with defaults
 src/config.ts:97 parseSymbols — parses "btc/rls" pairs, dedupes, requires one pair in quote currency
 src/config.ts:277 loadConfigs — BOTS_JSON array of env-override objects -> BotConfig[] (single config when unset); each entry merged over base env
+src/config.ts:7 boolEnv — boolean env preprocess so string "false" parses false (z.coerce.boolean mis-parsed it as true)
+src/strategy/mm.ts:161 manage — per-tick resting-quote loop: pollOrders (fills/age-cancel) -> cooldown -> stop-loss -> inventory-skewed bid/ask requote
+src/strategy/arb.ts:94 manage — per-tick cross-exchange scan: fee-adjusted both-direction round trips, equity sizing, dry-run/local vs live/remote legs
+src/execution/executor.ts placeLimit/cancel/poll — resting limit lifecycle via Nobitex addOrder/orderStatus; dry-run crossed-price fill; applyLimitFill routes fills to DB+portfolio+risk
 src/db.ts:35 migrate — creates signals/orders/trades/positions/risk_events/sentiment_events/tradingview_signals/portfolio_snapshots/alerts/meta
 src/db.ts:152 insertSignal — audit row for every decision (incl. HOLD/blocked)
-src/db.ts:172 insertOrder — orders row incl. kind (entry|dca|exit, default 'entry'); ALTER TABLE migration adds kind to legacy DBs
+src/db.ts:172 insertOrder — orders row incl. kind (entry|dca|exit|mm_bid|mm_ask|mm_exit|arb, default 'entry'); ALTER TABLE migration adds kind to legacy DBs
 src/db.ts:257 closePosition — closes position, records realized PnL and exit reason
 src/exchange/nobitex.ts:35 throttle — 3s min gap per public endpoint path
 src/exchange/nobitex.ts:88 marketStats — price poll source; status must be "ok"
@@ -163,10 +174,14 @@ src/db.ts:290 snapshotsBetween — equity/positions_value series by ts range (dr
 - Strategy exit order: fixed stop-loss (floor) → trailing stop/TP → fixed take-profit (skipped while trailing TP armed); keep TRAILING_TP_ACTIVATE_PCT <= TAKE_PROFIT_PCT for trailing TP to take effect
 - DslStrategy exit order (holding): fixed stop-loss → trailing → take-profit → DSL exit tree → DCA; DSL entry rule gates buys but fixed stop/trailing/take-profit always apply; warmup = max(rsiPeriod+5, maxMaPeriod+1, warmupSamples)
 - DSL entries skip the hybrid RSI-entry ceiling (RSI < RSI_ENTRY_UPPER) because the DSL's own entry tree encodes timing; volatility/exposure/cooldown/trade-cap gates still apply — RSI ceiling only guards the default hybrid entry
-- STRATEGY_POOLS is a JSON object symbol -> "hybrid"|DSL; symbols not listed get the shared hybrid instance; pool symbols are validated against SYMBOLS at startup; backtester replays the pool assignment for the symbol under test
+- STRATEGY_POOLS is a JSON object symbol -> "hybrid"|"ai"|"mm"|"arb"|DSL; symbols not listed get the shared hybrid instance; pool symbols are validated against SYMBOLS at startup; backtester replays the pool assignment for the symbol under test (MM supported, arb excluded)
 - DCA: levels sorted by belowPct; consumed one per tick in order (gap-downs don't skip levels); level consumed only after risk approval — blocked levels stay pending; stop-loss fires before a deep DCA level unless STOP_LOSS_PCT exceeds the level depth
 - DCA fills pass normal risk gates minus the open-position gate; cooldown/trade-cap still apply, so consecutive fills are throttled by COOLDOWN_MINUTES
 - Trigger rules are edge-triggered and in-memory (reset on restart); halt persists for the process lifetime; trigger inputs (rsi/price/sentiment) are recomputed per symbol in tick before the strategy runs
 - TradingView intents are consumed asynchronously one per symbol per tick (bounded FIFO, cap 200); BUY skips only the RSI-entry ceiling, SELL needs an open position; TRADINGVIEW_ENABLED defaults false and the endpoint 404s when off; alerts persist in tradingview_signals
 - SignalBroker is the single ingestion point: all external intents (sentiment/trade) flow through submit(); sentiment aggregation stays in SentimentEngine (the broker's sentiment subscriber); trade intents include source (tradingview|manual|scheduled) for audit
 - Multi-bot: BOTS_JSON entries are env-override objects merged over base env; each bot gets its own DB_PATH/poll loop/risk/strategy pool (isolation); SENTIMENT_WEBHOOK_PORT=0 disables that bot's webhook; bots share only the logger and the process
+
+- Market making (MM_ENABLED + STRATEGY_POOLS={"symbol":"mm"}): only passive limit orders via gateway.placeLimit -> db.insertOrder(kind mm_bid/mm_ask/mm_exit); no inventory -> bid only, after a bid fill both sides; bid amount capped by (MM_MAX_INVENTORY_VALUE - invValue)/mid so a fill never overshoots the cap; stale quotes (MM_MAX_QUOTE_AGE_SECONDS) cancelled then requoted; fill cooldown MM_COOLDOWN_SECONDS; stop-loss market-sells kind mm_exit when mid < cost*(1 - MM_STOP_LOSS_PCT/100). MM tracks inventory/costBasis in memory (per pair), NOT in the DB — DB positions are written by the executor on real fills. Dry-run executor fills a resting limit when the crossed side of the best price crosses the limit (buy: best ask <= limit; sell: best bid >= limit)
+- Arbitrage (ARB_ENABLED + ARB_SYMBOLS map): per tick compares fee-adjusted round trips in both directions vs the external book scaled by ARB_FX_RATE (0=1); legs are plain spot round trips (buy/sell same symbol, opposite legs on the second exchange; NO holding-account concept); dry-run simulates both legs locally and never calls the second exchange; live requires USER_ARB_API_KEY/SECRET (config-validated when ARB_ENABLED && !DRY_RUN) and checks the sell-side wallet; second-exchange leg failures are caught by the caller so a remote error never crashes the tick; BinanceArbClient deliberately thin (no nonce cache — acknowledged auth risk)
+- Boolean envs use boolEnv() (config.ts): only "true"/"1"/"yes"/"on" are true and "false"/"0"/"no"/"off" are false; do NOT use z.coerce.boolean() which mis-parses the string "false" as true (that latent bug made DRY_RUN=false impossible to set via env)

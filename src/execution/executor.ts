@@ -4,8 +4,9 @@ import { NobitexClient, NobitexError } from "../exchange/nobitex.js";
 import { PriceFeed } from "../market/priceFeed.js";
 import { PortfolioManager } from "../portfolio/manager.js";
 import { RiskManager } from "../risk/manager.js";
-import { SymbolPair } from "../types.js";
+import { OrderRecord, SymbolPair } from "../types.js";
 import { pino, type Logger } from "pino";
+import { OrderGateway, PollResult, MarketResult } from "./gateway.js";
 
 export interface FillResult {
   orderId: number;
@@ -18,7 +19,12 @@ export interface FillResult {
   simulated: boolean;
 }
 
-export class Executor {
+export function pairFromKey(key: string): SymbolPair {
+  const [src, dst] = key.split("/");
+  return { src: src ?? "", dst: dst ?? "", key, market: `${src}-${dst}`.toUpperCase() };
+}
+
+export class Executor implements OrderGateway {
   private db: AuditDb;
   private client: NobitexClient;
   private priceFeed: PriceFeed;
@@ -203,5 +209,163 @@ export class Executor {
       "executed fill"
     );
     return { orderId, symbol: pair.key, side, amount: filledAmount, price: finalPrice, total, fee, simulated: this.dryRun };
+  }
+
+  getBestPrices(pair: SymbolPair): { ask: number | null; bid: number | null } {
+    return this.priceFeed.getBestPrices(pair.key);
+  }
+
+  getLatestPrice(pair: SymbolPair): number | null {
+    return this.priceFeed.getLatestPrice(pair.key);
+  }
+
+  getBalance(currency: string): number {
+    return this.portfolio.getBalance(currency);
+  }
+
+  async placeLimit(pair: SymbolPair, side: "buy" | "sell", amount: number, price: number, kind: string): Promise<number | null> {
+    const ts = new Date().toISOString();
+    const clientOrderId = this.clientOrderId();
+    let nobitexOrderId: string | null = null;
+    let error: string | null = null;
+    if (!this.dryRun) {
+      try {
+        const resp = await this.client.addOrder({
+          type: side,
+          execution: "limit",
+          srcCurrency: pair.src,
+          dstCurrency: pair.dst,
+          amount: this.roundAmount(amount),
+          price: this.roundAmount(price),
+          clientOrderId,
+        });
+        if (resp.status !== "ok" || !resp.order) {
+          error = resp.message ?? resp.code ?? "order rejected";
+          this.logger.error({ symbol: pair.key, side, price, code: resp.code, message: resp.message }, "limit order rejected by exchange");
+        } else {
+          nobitexOrderId = String(resp.order.id);
+          const status = String(resp.order.status ?? "");
+          if (status === "Done" || status === "Filled") {
+            error = `limit order filled immediately (status ${status}), id=${nobitexOrderId}`;
+          }
+        }
+      } catch (err) {
+        error = err instanceof NobitexError ? err.message : (err as Error).message;
+        this.logger.error({ symbol: pair.key, side, price, error }, "limit order request failed");
+      }
+    }
+    const orderId = this.db.insertOrder({
+      ts,
+      clientOrderId,
+      symbol: pair.key,
+      side,
+      execution: "limit",
+      amount,
+      price,
+      status: error ? "failed" : "new",
+      dryRun: this.dryRun,
+      nobitexOrderId,
+      error,
+      kind,
+    });
+    return error ? null : orderId;
+  }
+
+  async cancel(orderId: number): Promise<boolean> {
+    const order = this.db.getOrder(orderId);
+    if (!order || order.status !== "new") return false;
+    if (!this.dryRun && order.nobitexOrderId) {
+      try {
+        await this.client.cancelOrder(Number(order.nobitexOrderId));
+      } catch (err) {
+        this.logger.error({ orderId, error: (err as Error).message }, "cancel order request failed");
+      }
+    }
+    this.db.updateOrderStatus(orderId, "canceled", order.nobitexOrderId, null);
+    this.logger.info({ orderId, symbol: order.symbol }, "limit order canceled");
+    return true;
+  }
+
+  async poll(orderId: number): Promise<PollResult> {
+    const order = this.db.getOrder(orderId);
+    if (!order) return { status: "failed" };
+    if (order.status === "filled") {
+      return { status: "filled", fillPrice: order.price ?? undefined, filledAmount: order.amount };
+    }
+    if (order.status !== "new") {
+      return { status: order.status };
+    }
+    if (this.dryRun) {
+      return this.pollDryRun(order);
+    }
+    return this.pollLive(order);
+  }
+
+  private async pollDryRun(order: OrderRecord): Promise<PollResult> {
+    const { ask, bid } = this.priceFeed.getBestPrices(order.symbol);
+    const limit = order.price ?? 0;
+    let filled = false;
+    if (order.side === "buy" && ask !== null && ask <= limit) filled = true;
+    if (order.side === "sell" && bid !== null && bid >= limit) filled = true;
+    if (!filled) return { status: "new" };
+    const fillPrice = limit;
+    const filledAmount = order.amount;
+    this.applyLimitFill(order.id, fillPrice, filledAmount);
+    return { status: "filled", fillPrice, filledAmount };
+  }
+
+  private async pollLive(order: OrderRecord): Promise<PollResult> {
+    if (!order.nobitexOrderId) return { status: "new" };
+    try {
+      const resp = await this.client.orderStatus({ id: Number(order.nobitexOrderId) });
+      if (resp.status !== "ok" || !resp.order) return { status: "new" };
+      const status = String(resp.order.status ?? "");
+      const matched = Number(resp.order.matchedAmount ?? 0);
+      if (status === "Done" || status === "Filled" || matched > 0) {
+        const filledAmount = matched > 0 ? matched : order.amount;
+        const avg = Number(resp.order.averagePrice ?? 0);
+        const fillPrice = avg > 0 ? avg : order.price ?? 0;
+        this.applyLimitFill(order.id, fillPrice, filledAmount);
+        return { status: "filled", fillPrice, filledAmount };
+      }
+      if (status === "Canceled" || status === "Cancelled") {
+        this.db.updateOrderStatus(order.id, "canceled", order.nobitexOrderId, null);
+        return { status: "canceled" };
+      }
+      return { status: "new" };
+    } catch (err) {
+      this.logger.error({ orderId: order.id, error: (err as Error).message }, "order status poll failed");
+      return { status: "new" };
+    }
+  }
+
+  private applyLimitFill(orderId: number, fillPrice: number, filledAmount: number): void {
+    const order = this.db.getOrder(orderId);
+    if (!order) return;
+    const total = filledAmount * fillPrice;
+    const fee = total * (this.feePct / 100);
+    const pair = pairFromKey(order.symbol);
+    this.db.updateOrderStatus(orderId, "filled", order.nobitexOrderId, null);
+    this.db.insertTrade({
+      ts: new Date().toISOString(),
+      orderId,
+      symbol: pair.key,
+      side: order.side,
+      amount: filledAmount,
+      price: fillPrice,
+      total,
+      fee,
+    });
+    this.portfolio.applyTrade(pair, order.side, filledAmount, fillPrice, fee, orderId);
+    this.risk.recordTrade(pair);
+    this.logger.info(
+      { orderId, symbol: pair.key, side: order.side, amount: filledAmount, price: fillPrice, total, fee, dryRun: this.dryRun },
+      "limit order filled"
+    );
+  }
+
+  async market(pair: SymbolPair, side: "buy" | "sell", amount: number, kind: string): Promise<MarketResult | null> {
+    const fill = await this.execute(pair, side, amount, kind, "spot");
+    return fill ? { price: fill.price, amount: fill.amount } : null;
   }
 }

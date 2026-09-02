@@ -7,6 +7,7 @@ import { RiskManager } from "../risk/manager.js";
 import { SentimentEngine } from "../sentiment/engine.js";
 import { DcaLadder } from "../strategy/dca.js";
 import { buildStrategyPool } from "../config/pools.js";
+import { BacktestOrderGateway } from "./gateway.js";
 import { SymbolPair, SentimentInput } from "../types.js";
 import { BacktestBar } from "./data.js";
 
@@ -112,6 +113,7 @@ export async function runBacktest(args: RunBacktestArgs): Promise<BacktestResult
     levels: config.dcaLevels,
     maxOrders: config.dcaMaxOrdersPerPosition,
   });
+  const gateway = new BacktestOrderGateway(db, feed, portfolio, risk, config.feePct, now);
   const strategyPool = buildStrategyPool({
     pool: config.strategyPools,
     symbols: [pair],
@@ -130,6 +132,14 @@ export async function runBacktest(args: RunBacktestArgs): Promise<BacktestResult
     dca: dcaLadder,
     ai: null,
     margin: config.margin,
+    gateway,
+    mm: config.mm,
+    arb: null,
+    arbClient: null,
+    nobitexClient: client,
+    tradingActive: true,
+    dryRun: true,
+    feePct: config.feePct,
   });
   const strategy = strategyPool.get(pair.key)!;
 
@@ -155,6 +165,8 @@ export async function runBacktest(args: RunBacktestArgs): Promise<BacktestResult
 
     virtualNow = bar.ts;
     feed.pushPrice(pair.key, bar.close, bar.ts);
+    feed.pushBestPrices(pair.key, bar.high, bar.low);
+    gateway.setBar(bar);
     while (eventIdx < sortedEvents.length && (sortedEvents[eventIdx]!.timestamp ?? 0) <= bar.ts) {
       sentiment.ingest(sortedEvents[eventIdx]!);
       eventIdx++;
@@ -239,6 +251,8 @@ export async function runBacktest(args: RunBacktestArgs): Promise<BacktestResult
         trades.push({ ts, symbol: pair.key, side: "buy", price: fillPrice, amount, total, fee, reason: decision.reason });
       }
     }
+
+    await strategy.manage?.(pair);
 
     const eq = portfolio.equity();
     equityCurve.push({ ts: bar.ts, equity: eq });

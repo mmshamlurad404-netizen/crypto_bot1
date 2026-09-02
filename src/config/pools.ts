@@ -8,16 +8,24 @@ import { HybridStrategy, MarginStrategyConfig, StrategyConfigShape } from "../st
 import { DslJson, parseDsl, DslStrategy } from "../strategy/dsl.js";
 import { AiAdvisorConfig, AiAdvisorStrategy, HttpLlmClient } from "../strategy/ai.js";
 import { DcaLadder } from "../strategy/dca.js";
+import { MmStrategyConfig, MarketMakingStrategy } from "../strategy/mm.js";
+import { ArbStrategyConfig, ArbitrageStrategy } from "../strategy/arb.js";
+import { OrderGateway } from "../execution/gateway.js";
+import { NobitexClient } from "../exchange/nobitex.js";
+import { ArbExchangeClient } from "../exchange/arb.js";
 
-export type StrategySpec = { kind: "hybrid" } | { kind: "ai" } | { kind: "dsl"; dsl: DslJson };
+export type StrategySpec = { kind: "hybrid" } | { kind: "ai" } | { kind: "mm" } | { kind: "arb" } | { kind: "dsl"; dsl: DslJson };
 
 export interface StrategyLike {
   evaluate(pair: SymbolPair): SignalDecision | Promise<SignalDecision>;
+  manage?(pair: SymbolPair): Promise<void> | void;
 }
 
 function parseSpec(value: unknown, key: string): StrategySpec {
   if (value === "hybrid") return { kind: "hybrid" };
   if (value === "ai") return { kind: "ai" };
+  if (value === "mm") return { kind: "mm" };
+  if (value === "arb") return { kind: "arb" };
   if (value !== null && typeof value === "object") {
     try {
       return { kind: "dsl", dsl: parseDsl(value) };
@@ -25,7 +33,7 @@ function parseSpec(value: unknown, key: string): StrategySpec {
       throw new Error(`STRATEGY_POOLS["${key}"] is not a valid DSL strategy: ${(err as Error).message}`);
     }
   }
-  throw new Error(`STRATEGY_POOLS["${key}"] must be "hybrid", "ai" or a DSL strategy object`);
+  throw new Error(`STRATEGY_POOLS["${key}"] must be "hybrid", "ai", "mm", "arb" or a DSL strategy object`);
 }
 
 export function parseStrategyPools(raw: string): Record<string, StrategySpec> {
@@ -57,10 +65,18 @@ export interface StrategyPoolDeps {
   dca: DcaLadder;
   ai: AiAdvisorConfig | null;
   margin?: MarginStrategyConfig | null;
+  gateway?: OrderGateway | null;
+  mm?: MmStrategyConfig | null;
+  arb?: ArbStrategyConfig | null;
+  arbClient?: ArbExchangeClient | null;
+  nobitexClient?: NobitexClient | null;
+  tradingActive?: boolean;
+  dryRun?: boolean;
+  feePct?: number;
 }
 
 export function buildStrategyPool(args: StrategyPoolDeps): Map<string, StrategyLike> {
-  const { pool, symbols, db, priceFeed, sentiment, portfolio, risk, strategyConfig, dca, ai, margin } = args;
+  const { pool, symbols, db, priceFeed, sentiment, portfolio, risk, strategyConfig, dca, ai, margin, gateway, mm, arb, arbClient, nobitexClient, tradingActive, dryRun, feePct } = args;
   const hybrid = new HybridStrategy(db, priceFeed, sentiment, portfolio, risk, strategyConfig, dca, margin ?? null);
   const aiStrategy = ai
     ? new AiAdvisorStrategy(db, priceFeed, sentiment, portfolio, risk, strategyConfig, new HttpLlmClient(ai.baseUrl, ai.apiKey, ai.model), {
@@ -68,6 +84,19 @@ export function buildStrategyPool(args: StrategyPoolDeps): Map<string, StrategyL
         minIntervalMs: ai.minIntervalMs,
       })
     : null;
+  const mmStrategy =
+    gateway && mm
+      ? new MarketMakingStrategy(gateway, db, mm, { tradingActive: tradingActive ?? true, halted: () => risk.isHalted() })
+      : null;
+  const arbStrategy =
+    gateway && arb && arbClient && nobitexClient
+      ? new ArbitrageStrategy(gateway, nobitexClient, portfolio, risk, arbClient, db, arb, {
+          tradingActive: tradingActive ?? true,
+          dryRun: dryRun ?? true,
+          feePct: feePct ?? 0,
+          halted: () => risk.isHalted(),
+        })
+      : null;
   const map = new Map<string, StrategyLike>();
   for (const pair of symbols) {
     const spec = pool[pair.key];
@@ -75,6 +104,10 @@ export function buildStrategyPool(args: StrategyPoolDeps): Map<string, StrategyL
       map.set(pair.key, hybrid);
     } else if (spec.kind === "ai") {
       map.set(pair.key, aiStrategy ?? hybrid);
+    } else if (spec.kind === "mm") {
+      map.set(pair.key, mmStrategy ?? hybrid);
+    } else if (spec.kind === "arb") {
+      map.set(pair.key, arbStrategy ?? hybrid);
     } else {
       map.set(pair.key, new DslStrategy(db, priceFeed, sentiment, portfolio, risk, strategyConfig.rsiPeriod, spec.dsl, dca));
     }

@@ -60,6 +60,10 @@ export class PriceFeed {
     this.append(key, price, ts);
   }
 
+  pushBestPrices(key: string, ask: number, bid: number): void {
+    this.lastStats.set(key, { isClosed: false, bestSell: String(ask), bestBuy: String(bid) });
+  }
+
   async poll(): Promise<void> {
     const srcCurrencies = [...new Set(this.symbols.map((s) => s.src))];
     const dstCurrencies = [...new Set(this.symbols.map((s) => s.dst))];

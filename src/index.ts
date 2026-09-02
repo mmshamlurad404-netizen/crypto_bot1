@@ -2,6 +2,7 @@ import { loadConfig, loadConfigs, BotConfig } from "./config.js";
 import { createLogger } from "./logger.js";
 import { AuditDb } from "./db.js";
 import { NobitexClient } from "./exchange/nobitex.js";
+import { BinanceArbClient } from "./exchange/arb.js";
 import { PriceFeed } from "./market/priceFeed.js";
 import { SentimentEngine } from "./sentiment/engine.js";
 import { SentimentWebhook } from "./sentiment/server.js";
@@ -89,6 +90,7 @@ export function startBot(config: BotConfig, baseLogger: Logger): BotRuntime {
     marginTakeProfitPct: config.margin.takeProfitPct,
   });
   const executor = new Executor(db, client, priceFeed, portfolio, risk, config.dryRun, config.feePct, logger);
+  const arbClient = config.arb.enabled ? new BinanceArbClient("https://api.binance.com", config.arb.apiKey, config.arb.apiSecret) : null;
   const dcaLadder = new DcaLadder({
     enabled: config.dcaEnabled,
     levels: config.dcaLevels,
@@ -113,6 +115,14 @@ export function startBot(config: BotConfig, baseLogger: Logger): BotRuntime {
     dca: dcaLadder,
     ai: config.aiAdvisor,
     margin: config.margin,
+    gateway: executor,
+    mm: config.mm,
+    arb: config.arb,
+    arbClient,
+    nobitexClient: client,
+    tradingActive: config.dryRun || config.tradingEnabled,
+    dryRun: config.dryRun,
+    feePct: config.feePct,
   });
   const notifier = new TelegramNotifier(db, config.telegramBotToken, config.telegramChatId, logger);
   const reporter = new DailyReporter(db, portfolio, priceFeed, sentimentEngine, notifier, config.symbols, logger);
@@ -361,6 +371,7 @@ export function startBot(config: BotConfig, baseLogger: Logger): BotRuntime {
         } else {
           logger.debug({ symbol: decision.symbol, reason: decision.reason }, "HOLD");
         }
+        await strategyPool.get(pair.key)!.manage?.(pair);
         const tvIntent = signals.shiftTrade(pair.key);
         if (tvIntent) {
           await processTradingViewIntent(tvIntent, pair);

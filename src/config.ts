@@ -4,6 +4,18 @@ import { SymbolPair, QuoteCurrency } from "./types.js";
 import { TriggerRule } from "./triggers/engine.js";
 import { parseStrategyPools, StrategySpec } from "./config/pools.js";
 
+function boolEnv(dflt: boolean) {
+  return z.preprocess((val) => {
+    if (typeof val === "boolean") return val;
+    if (val === undefined || val === null) return dflt;
+    if (typeof val === "number") return val !== 0;
+    const s = String(val).trim().toLowerCase();
+    if (s === "1" || s === "true" || s === "yes" || s === "on") return true;
+    if (s === "0" || s === "false" || s === "no" || s === "off") return false;
+    return dflt;
+  }, z.boolean());
+}
+
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
@@ -11,8 +23,8 @@ const envSchema = z.object({
 
   NOBITEX_API_KEY: z.string().default(""),
   NOBITEX_BASE_URL: z.string().url().default("https://apiv2.nobitex.ir"),
-  DRY_RUN: z.coerce.boolean().default(true),
-  TRADING_ENABLED: z.coerce.boolean().default(false),
+  DRY_RUN: boolEnv(true),
+  TRADING_ENABLED: boolEnv(false),
 
   QUOTE_CURRENCY: z.enum(["rls", "usdt"]).default("rls"),
   SYMBOLS: z.string().min(1),
@@ -29,11 +41,11 @@ const envSchema = z.object({
   SENTIMENT_WEBHOOK_PORT: z.coerce.number().int().min(0).default(3001),
   SENTIMENT_WEBHOOK_TOKEN: z.string().default("changeme"),
   SENTIMENT_JSON_FEED: z.string().default(""),
-  TRADINGVIEW_ENABLED: z.coerce.boolean().default(false),
+  TRADINGVIEW_ENABLED: boolEnv(false),
 
   PRICE_POLL_SECONDS: z.coerce.number().int().min(5).default(60),
   SERIES_MAX_POINTS: z.coerce.number().int().positive().default(500),
-  SEED_SERIES_FROM_TRADES: z.coerce.boolean().default(true),
+  SEED_SERIES_FROM_TRADES: boolEnv(true),
   VIRTUAL_START_EQUITY: z.coerce.number().positive().default(100000000),
 
   MAX_POSITION_SIZE_PCT: z.coerce.number().min(0).max(100).default(10),
@@ -53,17 +65,37 @@ const envSchema = z.object({
   COOLDOWN_MINUTES: z.coerce.number().int().min(0).default(30),
   FEE_PCT: z.coerce.number().min(0).max(10).default(0.25),
 
-  DCA_ENABLED: z.coerce.boolean().default(false),
+  DCA_ENABLED: boolEnv(false),
   DCA_MAX_ORDERS_PER_POSITION: z.coerce.number().int().min(0).default(4),
   DCA_LEVELS: z.string().default("[]"),
 
-  MARGIN_ENABLED: z.coerce.boolean().default(false),
+  MARGIN_ENABLED: boolEnv(false),
   MARGIN_LEVERAGE: z.coerce.number().min(1).max(10).default(2),
   MARGIN_MAX_SHORT_PCT: z.coerce.number().min(0).max(100).default(10),
   MARGIN_SYMBOLS: z.string().default(""),
   MARGIN_STOP_LOSS_PCT: z.coerce.number().min(0).default(3),
   MARGIN_TAKE_PROFIT_PCT: z.coerce.number().min(0).default(6),
   RSI_SHORT_ENTRY_FLOOR: z.coerce.number().min(0).max(100).default(65),
+
+  MM_ENABLED: boolEnv(false),
+  MM_SYMBOLS: z.string().default(""),
+  MM_SPREAD_PCT: z.coerce.number().min(0.01).default(0.5),
+  MM_ORDER_VALUE: z.coerce.number().positive().default(10000000),
+  MM_MAX_INVENTORY_VALUE: z.coerce.number().positive().default(20000000),
+  MM_STOP_LOSS_PCT: z.coerce.number().min(0).default(3),
+  MM_COOLDOWN_SECONDS: z.coerce.number().int().min(0).default(60),
+  MM_MAX_QUOTE_AGE_SECONDS: z.coerce.number().int().min(1).default(300),
+  MM_MIN_ORDER_VALUE: z.coerce.number().min(0).default(5000000),
+
+  ARB_ENABLED: boolEnv(false),
+  ARB_EXCHANGE: z.string().default("binance"),
+  ARB_SYMBOLS: z.string().default("{}"),
+  ARB_FX_RATE: z.coerce.number().min(0).default(0),
+  ARB_MIN_PROFIT_PCT: z.coerce.number().min(0).default(0.5),
+  ARB_MAX_NOTIONAL_PCT: z.coerce.number().min(0).max(100).default(5),
+  ARB_COOLDOWN_SECONDS: z.coerce.number().int().min(0).default(300),
+  USER_ARB_API_KEY: z.string().default(""),
+  USER_ARB_API_SECRET: z.string().default(""),
 
   TRIGGERS: z.string().default("[]"),
 
@@ -94,6 +126,30 @@ export interface MarginConfig {
   symbols: string[];
   stopLossPct: number;
   takeProfitPct: number;
+}
+
+export interface MmConfig {
+  enabled: boolean;
+  symbols: string[];
+  spreadPct: number;
+  orderValue: number;
+  maxInventoryValue: number;
+  stopLossPct: number;
+  cooldownMs: number;
+  maxQuoteAgeMs: number;
+  minOrderValue: number;
+}
+
+export interface ArbConfig {
+  enabled: boolean;
+  exchange: string;
+  symbols: Record<string, string>;
+  fxRate: number;
+  minProfitPct: number;
+  maxNotionalPct: number;
+  cooldownMs: number;
+  apiKey: string;
+  apiSecret: string;
 }
 
 export interface BotConfig {
@@ -143,6 +199,8 @@ export interface BotConfig {
   dcaMaxOrdersPerPosition: number;
   margin: MarginConfig;
   rsiShortEntryFloor: number;
+  mm: MmConfig;
+  arb: ArbConfig;
   triggers: TriggerRule[];
   strategyPools: Record<string, StrategySpec>;
   aiAdvisor: { apiKey: string; baseUrl: string; model: string; minIntervalMs: number; contextBars: number } | null;
@@ -225,6 +283,30 @@ function parseTriggers(raw: string): TriggerRule[] {
   return result;
 }
 
+function parseArbSymbols(raw: string, symbolKeys: Set<string>): Record<string, string> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("ARB_SYMBOLS must be a JSON object mapping a bot symbol to a second-exchange symbol, e.g. {\"btc/rls\":\"btcusdt\"}");
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("ARB_SYMBOLS must be a JSON object mapping a bot symbol to a second-exchange symbol");
+  }
+  const result: Record<string, string> = {};
+  for (const [symbol, arbSymbol] of Object.entries(parsed as Record<string, unknown>)) {
+    if (!symbolKeys.has(symbol)) {
+      throw new Error(`ARB_SYMBOLS references symbol "${symbol}" which is not in SYMBOLS`);
+    }
+    const target = String(arbSymbol ?? "").trim();
+    if (!target) {
+      throw new Error(`ARB_SYMBOLS["${symbol}"] needs a non-empty second-exchange symbol`);
+    }
+    result[symbol] = target;
+  }
+  return result;
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
   const parsed = envSchema.parse(env);
   const symbols = parseSymbols(parsed.SYMBOLS, parsed.QUOTE_CURRENCY);
@@ -249,6 +331,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
   if (usesAi && !aiApiKey) {
     throw new Error('STRATEGY_POOLS uses the "ai" strategy but USER_LLM_API_KEY is not set');
   }
+  const usesMm = Object.values(strategyPools).some((spec) => spec.kind === "mm");
+  if (usesMm && !parsed.MM_ENABLED) {
+    throw new Error('STRATEGY_POOLS uses the "mm" strategy but MM_ENABLED is not set');
+  }
+  const usesArb = Object.values(strategyPools).some((spec) => spec.kind === "arb");
+  if (usesArb && !parsed.ARB_ENABLED) {
+    throw new Error('STRATEGY_POOLS uses the "arb" strategy but ARB_ENABLED is not set');
+  }
+  if (parsed.ARB_ENABLED && !parsed.DRY_RUN && (!parsed.USER_ARB_API_KEY.trim() || !parsed.USER_ARB_API_SECRET.trim())) {
+    throw new Error("ARB_ENABLED requires USER_ARB_API_KEY and USER_ARB_API_SECRET when not in dry-run mode");
+  }
   const marginSymbols = parsed.MARGIN_SYMBOLS.split(",")
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
@@ -257,6 +350,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
       throw new Error(`MARGIN_SYMBOLS references symbol "${symbol}" which is not in SYMBOLS`);
     }
   }
+  const mmSymbols = parsed.MM_SYMBOLS.split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  for (const symbol of mmSymbols) {
+    if (!symbolKeys.has(symbol)) {
+      throw new Error(`MM_SYMBOLS references symbol "${symbol}" which is not in SYMBOLS`);
+    }
+  }
+  const arbSymbols = parseArbSymbols(parsed.ARB_SYMBOLS, symbolKeys);
   const margin: MarginConfig = {
     enabled: parsed.MARGIN_ENABLED,
     leverage: parsed.MARGIN_LEVERAGE,
@@ -264,6 +366,28 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     symbols: marginSymbols,
     stopLossPct: parsed.MARGIN_STOP_LOSS_PCT,
     takeProfitPct: parsed.MARGIN_TAKE_PROFIT_PCT,
+  };
+  const mm: MmConfig = {
+    enabled: parsed.MM_ENABLED,
+    symbols: mmSymbols,
+    spreadPct: parsed.MM_SPREAD_PCT,
+    orderValue: parsed.MM_ORDER_VALUE,
+    maxInventoryValue: parsed.MM_MAX_INVENTORY_VALUE,
+    stopLossPct: parsed.MM_STOP_LOSS_PCT,
+    cooldownMs: parsed.MM_COOLDOWN_SECONDS * 1000,
+    maxQuoteAgeMs: parsed.MM_MAX_QUOTE_AGE_SECONDS * 1000,
+    minOrderValue: parsed.MM_MIN_ORDER_VALUE,
+  };
+  const arb: ArbConfig = {
+    enabled: parsed.ARB_ENABLED,
+    exchange: parsed.ARB_EXCHANGE.trim().toLowerCase(),
+    symbols: arbSymbols,
+    fxRate: parsed.ARB_FX_RATE,
+    minProfitPct: parsed.ARB_MIN_PROFIT_PCT,
+    maxNotionalPct: parsed.ARB_MAX_NOTIONAL_PCT,
+    cooldownMs: parsed.ARB_COOLDOWN_SECONDS * 1000,
+    apiKey: parsed.USER_ARB_API_KEY.trim(),
+    apiSecret: parsed.USER_ARB_API_SECRET.trim(),
   };
   return {
     botName: parsed.BOT_NAME.trim() || "default",
@@ -312,6 +436,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     dcaMaxOrdersPerPosition: parsed.DCA_MAX_ORDERS_PER_POSITION,
     margin,
     rsiShortEntryFloor: parsed.RSI_SHORT_ENTRY_FLOOR,
+    mm,
+    arb,
     triggers,
     strategyPools,
     aiAdvisor: aiApiKey

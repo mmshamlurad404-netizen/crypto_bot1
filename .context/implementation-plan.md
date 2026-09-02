@@ -1,6 +1,6 @@
 # Implementation Plan — Cryptohopper feature parity
 
-Updated: 2026-08-25
+Updated: 2026-09-02
 Basis: `.context/gap-analysis.md` priority ranking. Scope = on-prem, Nobitex-only, safety-first (DRY_RUN / TRADING_ENABLED stay defaulted to safe).
 
 ## Phase 1 — Validate & instrument what we already trade (do first)
@@ -95,7 +95,13 @@ Basis: `.context/gap-analysis.md` priority ranking. Scope = on-prem, Nobitex-onl
 - Docs: `.env.example` margin block + README "Short selling via margin".
 - Tests `tests/margin.test.ts` (10: config, risk gates/blocked-positions, margin stop/tp, portfolio equity+realized, executor dry-run + failed margin order, strategy SHORT/COVER + stop-loss cover, backtest profitable short); suite 118/118, typecheck + build clean.
 
-### P3-4 Market making / arbitrage — PENDING (highest complexity, lowest priority)
+### P3-4 Market making / arbitrage — DONE (2026-09-02)
+- Config (all default OFF): `MM_ENABLED`/`MM_SYMBOLS`/`MM_SPREAD_PCT`/`MM_ORDER_VALUE`/`MM_MAX_INVENTORY_VALUE`/`MM_STOP_LOSS_PCT`/`MM_COOLDOWN_SECONDS`/`MM_MAX_QUOTE_AGE_SECONDS`/`MM_MIN_ORDER_VALUE` → `BotConfig.mm`; `ARB_ENABLED`/`ARB_EXCHANGE`/`ARB_SYMBOLS`/`ARB_FX_RATE`/`ARB_MIN_PROFIT_PCT`/`ARB_MAX_NOTIONAL_PCT`/`ARB_COOLDOWN_SECONDS` + `USER_ARB_API_KEY`/`USER_ARB_API_SECRET` → `BotConfig.arb`. Validation rejects unknown MM/ARB symbols and live (`DRY_RUN=false`) arb without second-exchange creds. Also replaced `z.coerce.boolean()` with a `boolEnv()` preprocess so the string `"false"` parses to `false` (latent bug: `DRY_RUN=false` used to coerce to `true`).
+- Execution: new `OrderGateway` interface (`src/execution/gateway.ts`) implemented by `Executor` — `placeLimit`/`cancel`/`poll` resting limit orders (dry-run fills when best price crosses the limit; live poll detects immediate fills/partials) with `applyLimitFill` routed through AuditDb + `PortfolioManager.applyTrade` + `RiskManager.recordTrade`; exported `pairFromKey`.
+- Market making `src/strategy/mm.ts` (`MarketMakingStrategy`, opt-in per symbol via `STRATEGY_POOLS={"btc/rls":"mm"}`): per-pair state, bid-only when no inventory, both sides after a bid fill, inventory-aware skew capped by `MM_MAX_INVENTORY_VALUE` (fill cannot overshoot), stale-quote cancel+requote, fill cooldown, stop-loss market close; `manage()` runs per tick; backtest sim gateway fills at limit intra-bar.
+- Arbitrage `src/strategy/arb.ts` + `src/exchange/arb.ts`: bidirectional fee-adjusted comparison vs Binance bookTicker (`BinanceArbClient`, signed market legs gated on creds), equity-sized legs, cooldown, dry-run simulates round trips locally (never contacts the 2nd exchange), live checks sell-side balance first and remote-leg errors never crash the tick; plain spot round trips, no holding-account concept; excluded from backtests.
+- Docs: `.env.example` MM/ARB blocks + README "Market making (resting quotes)" and "Cross-exchange arbitrage" sections.
+- Tests `tests/mm.test.ts` (8, rebuilt around the real executor gateway incl. stale-quote requote + max-inventory cap), `tests/arb.test.ts` (8 incl. reverse direction + live inventory gate), plus config bool parsing; suite 137/137, typecheck + build clean. Committed `feat(mm): market making + cross-exchange arbitrage`.
 
 ## Explicitly NOT planned
 Multi-exchange abstraction, marketplace/social/mobile/charting SaaS, copy trading, taxes reporting.
