@@ -1,5 +1,5 @@
 # Project Map — nobitex-sentiment-bot
-Updated: 2026-09-02
+Updated: 2026-09-04
 ## Shape
 ```
 /workspace
@@ -44,7 +44,7 @@ src/db.ts — AuditDb: 11 tables (incl. margin_positions), indexes, insert/query
 src/logger.ts — pino logger, pino-pretty transport at debug/trace
 src/indicators.ts — RSI (Wilder smoothing), volatility (60-bar log returns), SMA/EMA (null on insufficient data)
 src/config/pools.ts — parseStrategyPools (symbol -> "hybrid"|"ai"|"mm"|"arb"|DSL) + buildStrategyPool -> Map<symbol, StrategyLike>; StrategyLike.evaluate promise-capable; shared hybrid/ai instances; StrategyPoolDeps.ai/.mm/.arb/.arbClient/.nobitexClient/.tradingActive/.dryRun/.feePct; optional MM/ARB fall back to hybrid
-src/exchange/nobitex.ts — REST client: stats, trades, wallets, addOrder/status/cancel, margin endpoints; per-path public throttle
+src/exchange/nobitex.ts — REST client: stats, trades, wallets, addOrder/status/cancel (cancelOrder returns updated order incl. matchedAmount), margin endpoints; per-path public throttle
 src/exchange/arb.ts — ArbExchangeClient interface + BinanceArbClient (fetch bookTicker; signed marketBuy/marketSell/getBalance require USER_ARB_* creds; 3s in-flight window)
 src/market/priceFeed.ts — in-memory PricePoint series, seed from recent trades, poll stats; setBar() feeds the backtest gateway
 src/sentiment/engine.ts — confidence × time-decay weighted sentiment score
@@ -59,7 +59,7 @@ src/strategy/arb.ts — ArbitrageStrategy (manage? per tick): bidirectional fee-
 src/triggers/engine.ts — TriggerEngine: edge-triggered rules (rsi/price/sentiment below/above) -> notify/halt; per-symbol evaluation before strategy
 src/risk/manager.ts — evaluateBuy gate chain, volatility sizing, stop-loss/take-profit, trailing stops, evaluateDca (skips open-position gate), halt state; evaluateBuy accepts {skipRsiGate} for DSL entries; evaluateShort + margin stop/tp/trailing (inverted); hasAnyOpenPosition blocks both directions
 src/portfolio/manager.ts — dry-run virtual holdings vs live wallets; applyTrade PnL accounting; margin short pnl (unrealized in equity, realized credited to quote), applyMarginOpen/applyMarginClose
-src/execution/executor.ts — fills at best bid/ask, dry-run simulation or live addOrder, fee calc; execute(mode: spot|margin) + openShort/coverShort; implements OrderGateway (placeLimit/cancel/poll for resting limit orders; dry-run crosses-price fill; live poll immediate-fill/partial; applyLimitFill -> AuditDb + applyTrade + recordTrade); exports pairFromKey
+src/execution/executor.ts — fills at best bid/ask, dry-run simulation or live addOrder, fee calc; execute(mode: spot|margin) + openShort/coverShort; implements OrderGateway (placeLimit/cancel/poll for resting limit orders; dry-run crosses-price fill; live poll books fills only at a terminal state per the official orders/status contract, partial-Active keeps residual tracked until Done/Canceled, clientOrderId retry fallback, cancel returns false when it raced a fill/request failed so the matched portion is booked once by poll; applyLimitFill -> AuditDb + applyTrade + recordTrade); exports pairFromKey
 src/execution/gateway.ts — OrderGateway interface: getBestPrices/getLatestPrice/getBalance/placeLimit/cancel/poll/market
 src/alerts/telegram.ts — sendMessage with HTML, logs every alert to DB
 src/alerts/report.ts — DailyReporter: snapshot, HTML report, prev-day equity meta
@@ -79,6 +79,7 @@ tests/triggers.test.ts — trigger edge firing/re-arm, condition types, config v
 tests/signals.test.ts — SignalBroker: sentiment routing+result, rejections, trade FIFO/queue/drain, no-subscriber acceptance
 tests/dsl.test.ts — DSL node semantics, warmup, entry/exit, trend entry, pool parse/validation/assignment, config rejection
 tests/mm.test.ts — MM config parse (default off), executor-gateway limit resting/fill/cancel + trade record, real-gateway strategy: bid-only->both-sides, ask fill closes position, stop-loss market close, cooldown, stale-quote requote, max-inventory bid cap, disabled/monitor-only/halt
+tests/orderpoll.test.ts — live resting-order lifecycle with stubbed NobitexClient: full-fill booking, averagePrice fallback to limit price, partial-Active deferral + terminal booking, cancel-race books matched once, immediate-fill rests (not failed), clean cancel, clientOrderId fallback on id miss, MM partial-at-cancel end-to-end
 tests/arb.test.ts — arb config parse + live-credential validation, forward + reverse direction dry-run round trips (never touches 2nd exchange), min-profit/cooldown, live sell-side inventory gate, monitor-only, halt, BinanceArbClient parse + cred requirement
 tests/bots.test.ts — loadConfigs: single default, N merged configs, inherited defaults, malformed BOTS_JSON rejections, port-0/BOT_NAME
 tests/tradingview.test.ts — TradingView alert parse (action/ticker/hold/reject), broker enqueue, HTTP endpoint enqueue+persist, auth/disabled/symbol errors, sentiment-through-broker
@@ -99,7 +100,7 @@ src/config.ts:277 loadConfigs — BOTS_JSON array of env-override objects -> Bot
 src/config.ts:7 boolEnv — boolean env preprocess so string "false" parses false (z.coerce.boolean mis-parsed it as true)
 src/strategy/mm.ts:161 manage — per-tick resting-quote loop: pollOrders (fills/age-cancel) -> cooldown -> stop-loss -> inventory-skewed bid/ask requote
 src/strategy/arb.ts:94 manage — per-tick cross-exchange scan: fee-adjusted both-direction round trips, equity sizing, dry-run/local vs live/remote legs
-src/execution/executor.ts placeLimit/cancel/poll — resting limit lifecycle via Nobitex addOrder/orderStatus; dry-run crossed-price fill; applyLimitFill routes fills to DB+portfolio+risk
+src/execution/executor.ts placeLimit/cancel/poll — resting limit lifecycle via Nobitex addOrder/orderStatus; dry-run crossed-price fill; live poll books at terminal Done/Canceled only (deferral keeps partial residuals tracked), clientOrderId retry, cancel returns false on partial-race/request-failure; applyLimitFill routes fills to DB+portfolio+risk
 src/db.ts:35 migrate — creates signals/orders/trades/positions/risk_events/sentiment_events/tradingview_signals/portfolio_snapshots/alerts/meta
 src/db.ts:152 insertSignal — audit row for every decision (incl. HOLD/blocked)
 src/db.ts:172 insertOrder — orders row incl. kind (entry|dca|exit|mm_bid|mm_ask|mm_exit|arb, default 'entry'); ALTER TABLE migration adds kind to legacy DBs
@@ -183,5 +184,6 @@ src/db.ts:290 snapshotsBetween — equity/positions_value series by ts range (dr
 - Multi-bot: BOTS_JSON entries are env-override objects merged over base env; each bot gets its own DB_PATH/poll loop/risk/strategy pool (isolation); SENTIMENT_WEBHOOK_PORT=0 disables that bot's webhook; bots share only the logger and the process
 
 - Market making (MM_ENABLED + STRATEGY_POOLS={"symbol":"mm"}): only passive limit orders via gateway.placeLimit -> db.insertOrder(kind mm_bid/mm_ask/mm_exit); no inventory -> bid only, after a bid fill both sides; bid amount capped by (MM_MAX_INVENTORY_VALUE - invValue)/mid so a fill never overshoots the cap; stale quotes (MM_MAX_QUOTE_AGE_SECONDS) cancelled then requoted; fill cooldown MM_COOLDOWN_SECONDS; stop-loss market-sells kind mm_exit when mid < cost*(1 - MM_STOP_LOSS_PCT/100). MM tracks inventory/costBasis in memory (per pair), NOT in the DB — DB positions are written by the executor on real fills. Dry-run executor fills a resting limit when the crossed side of the best price crosses the limit (buy: best ask <= limit; sell: best bid >= limit)
+- Live resting orders (executor/MM): fill accounting follows the documented orders/status contract — statuses New|Active|Inactive|Done|Canceled, monetary fields as decimal strings incl. 0E-10; matchedAmount > 0 while Active or on Canceled means a partial fill, booked exactly once at the terminal state (averagePrice when present, else the limit price); a cancel that raced a fill or failed returns false from gateway.cancel so MM keeps polling the id and never loses or double-books inventory; the /v2/market/orders/list paging fallback idea is obsolete (clientOrderId lookup is the documented backup)
 - Arbitrage (ARB_ENABLED + ARB_SYMBOLS map): per tick compares fee-adjusted round trips in both directions vs the external book scaled by ARB_FX_RATE (0=1); legs are plain spot round trips (buy/sell same symbol, opposite legs on the second exchange; NO holding-account concept); dry-run simulates both legs locally and never calls the second exchange; live requires USER_ARB_API_KEY/SECRET (config-validated when ARB_ENABLED && !DRY_RUN) and checks the sell-side wallet; second-exchange leg failures are caught by the caller so a remote error never crashes the tick; BinanceArbClient deliberately thin (no nonce cache — acknowledged auth risk)
 - Boolean envs use boolEnv() (config.ts): only "true"/"1"/"yes"/"on" are true and "false"/"0"/"no"/"off" are false; do NOT use z.coerce.boolean() which mis-parses the string "false" as true (that latent bug made DRY_RUN=false impossible to set via env)

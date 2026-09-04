@@ -172,7 +172,7 @@ export class NobitexClient {
     });
   }
 
-  async cancelOrder(orderId: number): Promise<{ status: string; code?: string; message?: string }> {
+  async cancelOrder(orderId: number): Promise<{ status: string; updatedStatus?: string; order?: Record<string, unknown>; code?: string; message?: string }> {
     return this.request({
       path: "/market/orders/update-status",
       method: "POST",

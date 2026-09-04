@@ -111,8 +111,8 @@ export class MarketMakingStrategy implements StrategyLike {
       } else if (res.status === "canceled" || res.status === "failed") {
         state.bidOrderId = null;
       } else if (now - state.bidPlacedAt >= this.config.maxQuoteAgeMs) {
-        await this.gateway.cancel(state.bidOrderId);
-        state.bidOrderId = null;
+        const cancelled = await this.gateway.cancel(state.bidOrderId);
+        if (cancelled) state.bidOrderId = null;
       }
     }
     if (state.askOrderId !== null) {
@@ -131,8 +131,8 @@ export class MarketMakingStrategy implements StrategyLike {
       } else if (res.status === "canceled" || res.status === "failed") {
         state.askOrderId = null;
       } else if (now - state.askPlacedAt >= this.config.maxQuoteAgeMs) {
-        await this.gateway.cancel(state.askOrderId);
-        state.askOrderId = null;
+        const cancelled = await this.gateway.cancel(state.askOrderId);
+        if (cancelled) state.askOrderId = null;
       }
     }
   }

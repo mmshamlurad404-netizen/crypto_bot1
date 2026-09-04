@@ -244,10 +244,6 @@ export class Executor implements OrderGateway {
           this.logger.error({ symbol: pair.key, side, price, code: resp.code, message: resp.message }, "limit order rejected by exchange");
         } else {
           nobitexOrderId = String(resp.order.id);
-          const status = String(resp.order.status ?? "");
-          if (status === "Done" || status === "Filled") {
-            error = `limit order filled immediately (status ${status}), id=${nobitexOrderId}`;
-          }
         }
       } catch (err) {
         error = err instanceof NobitexError ? err.message : (err as Error).message;
@@ -274,12 +270,29 @@ export class Executor implements OrderGateway {
   async cancel(orderId: number): Promise<boolean> {
     const order = this.db.getOrder(orderId);
     if (!order || order.status !== "new") return false;
-    if (!this.dryRun && order.nobitexOrderId) {
-      try {
-        await this.client.cancelOrder(Number(order.nobitexOrderId));
-      } catch (err) {
-        this.logger.error({ orderId, error: (err as Error).message }, "cancel order request failed");
-      }
+    if (this.dryRun || !order.nobitexOrderId) {
+      this.db.updateOrderStatus(orderId, "canceled", order.nobitexOrderId, null);
+      this.logger.info({ orderId, symbol: order.symbol, dryRun: this.dryRun }, "limit order canceled");
+      return true;
+    }
+    let resp: { status: string; updatedStatus?: string; order?: Record<string, unknown>; code?: string; message?: string } | null = null;
+    try {
+      resp = await this.client.cancelOrder(Number(order.nobitexOrderId));
+    } catch (err) {
+      this.logger.error({ orderId, error: (err as Error).message }, "cancel order request failed");
+      return false;
+    }
+    if (resp.status !== "ok") {
+      this.logger.error({ orderId, code: resp.code, message: resp.message }, "cancel order rejected by exchange");
+      return false;
+    }
+    const matched = Number(resp.order?.matchedAmount ?? 0);
+    if (matched > 0) {
+      this.logger.info(
+        { orderId, matched, symbol: order.symbol },
+        "cancel raced a fill: partial matchedAmount kept resting until the next poll books it"
+      );
+      return false;
     }
     this.db.updateOrderStatus(orderId, "canceled", order.nobitexOrderId, null);
     this.logger.info({ orderId, symbol: order.symbol }, "limit order canceled");
@@ -317,20 +330,35 @@ export class Executor implements OrderGateway {
   private async pollLive(order: OrderRecord): Promise<PollResult> {
     if (!order.nobitexOrderId) return { status: "new" };
     try {
-      const resp = await this.client.orderStatus({ id: Number(order.nobitexOrderId) });
-      if (resp.status !== "ok" || !resp.order) return { status: "new" };
+      let resp = await this.client.orderStatus({ id: Number(order.nobitexOrderId) });
+      if ((resp.status !== "ok" || !resp.order) && order.clientOrderId) {
+        this.logger.warn({ orderId: order.id }, "order status by id unavailable; retrying by clientOrderId");
+        resp = await this.client.orderStatus({ clientOrderId: order.clientOrderId });
+      }
+      if (resp.status !== "ok" || !resp.order) {
+        this.logger.warn({ orderId: order.id }, "live order status unavailable (order not found)");
+        return { status: "new" };
+      }
       const status = String(resp.order.status ?? "");
       const matched = Number(resp.order.matchedAmount ?? 0);
-      if (status === "Done" || status === "Filled" || matched > 0) {
-        const filledAmount = matched > 0 ? matched : order.amount;
-        const avg = Number(resp.order.averagePrice ?? 0);
-        const fillPrice = avg > 0 ? avg : order.price ?? 0;
+      const avg = Number(resp.order.averagePrice ?? 0);
+      const fillPrice = avg > 0 ? avg : order.price ?? 0;
+      const fullyMatched = matched >= order.amount - 1e-12;
+      if (status === "Done" || status === "Filled" || (status !== "Canceled" && status !== "Cancelled" && fullyMatched)) {
+        const filledAmount = matched > 0 ? Math.min(matched, order.amount) : order.amount;
         this.applyLimitFill(order.id, fillPrice, filledAmount);
         return { status: "filled", fillPrice, filledAmount };
       }
       if (status === "Canceled" || status === "Cancelled") {
+        if (matched > 0) {
+          this.applyLimitFill(order.id, fillPrice, matched);
+          return { status: "filled", fillPrice, filledAmount: matched };
+        }
         this.db.updateOrderStatus(order.id, "canceled", order.nobitexOrderId, null);
         return { status: "canceled" };
+      }
+      if (matched > 0) {
+        this.logger.debug({ orderId: order.id, matched, status }, "limit order partially filled; booking deferred until a terminal status");
       }
       return { status: "new" };
     } catch (err) {
