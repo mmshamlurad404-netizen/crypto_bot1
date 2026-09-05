@@ -146,6 +146,41 @@ DCA fills are recorded with `kind='dca'` in the `orders` table and the averaged
 entry price is written back to the position, so a recovery to the new average
 roughly breaks even. DCA is disabled by default.
 
+### Restart safety & boot recovery
+
+Risk state is persisted, so a restart does not silently reset protective
+controls: the daily-loss halt, per-symbol cooldowns, and trailing stop/take-profit
+ratchets are stored in the DB `meta` table (`risk.state_v1`) and rehydrated on
+boot. A persisted **daily-loss halt clears only when the restart lands on a new
+UTC day** (logged `halt-cleared`); a trigger halt is restored as-is
+(`halt-restored`) until it would have expired. On every boot the bot also:
+
+- re-polls every order that was still open when it stopped and books any fills
+  that occurred while it was down (`recoverLiveOrders`), exactly once;
+- marks orders that were canceled/failed while it was down and skips rows whose
+  dry-run/live mode no longer matches the current run;
+- re-adopts market-making inventory (position + cost basis) and resting quote
+  ids from persisted `mm.state.<pairKey>` meta, so stopped-out inventory is not
+  silently re-bought after a restart.
+
+All of this runs before the first tick of the day, and persistence writes are
+best-effort (a meta write failure can never take a tick down).
+
+### Reconciliation
+
+Run a manual, read-only check of the DB against the live exchange wallet:
+
+```bash
+npm run reconcile
+```
+
+It derives the expected active base holdings for each symbol
+(open positions minus the amount still resting in open sell orders), compares
+them against the real wallet balances fetched from the exchange, and prints a
+report. Exit code is non-zero when any symbol drifts beyond a tiny dust
+tolerance, so it can be wired into cron/health checks. It requires
+`DRY_RUN=false` and a live API key, and it never places orders.
+
 ## Trigger rules
 
 `TRIGGERS` is a JSON array of declarative rules evaluated every tick **before**
@@ -158,13 +193,18 @@ the strategy. Each rule has an `id`, a `symbol`, a `when` condition and a
 | `rsi_below` / `rsi_above` | RSI threshold | `notify` | Telegram alert (falls back to the alerts log when unconfigured) |
 | `price_below` / `price_above` | Last price vs value in quote currency | `halt` | Halts trading for the day |
 | `sentiment_below` / `sentiment_above` | Aggregate sentiment threshold | | |
+| `volatility_below` / `volatility_above` | Volatility (fraction, e.g. `0.02`) | | |
+| `atr_pct_below` / `atr_pct_above` | Close-range proxy of ATR in % (14-bar) | | |
+| `stoch_k_below` / `stoch_k_above`, `stoch_d_below` / `stoch_d_above` | Stochastic %K/%D in 0..100 (14/3, close-based) | | |
+| `macd_hist_pct_below` / `macd_hist_pct_above` | MACD histogram as % of price (12/26/9) | | |
 
 Example:
 
 ```json
 [
   {"id":"btc-dip","symbol":"btc/rls","when":{"type":"rsi_below","value":25},"then":{"type":"notify","message":"BTC oversold!"}},
-  {"id":"circuit-breaker","symbol":"eth/rls","when":{"type":"price_below","value":200000},"then":{"type":"halt"}}
+  {"id":"circuit-breaker","symbol":"eth/rls","when":{"type":"price_below","value":200000},"then":{"type":"halt"}},
+  {"id":"trend-resume","symbol":"btc/rls","when":{"type":"macd_hist_pct_above","value":0},"then":{"type":"notify"}}
 ]
 ```
 
@@ -185,7 +225,16 @@ A DSL strategy is a JSON object with optional `warmupSamples`, `entry` and
 | `{"volatility_lt": 0.05}` / `{"volatility_gt": 0.01}` | Volatility below/above |
 | `{"sentiment_gt": 0.3}` / `{"sentiment_lt": -0.2}` | Aggregate sentiment vs threshold |
 | `{"price_gt_ma": {"kind":"sma","period":20}}` / `price_lt_ma` | Price above/below SMA or EMA |
+| `{"macd_hist_pct_gt": 0}` / `{"macd_hist_pct_lt": -0.5}` | MACD histogram as % of price (12/26/9) |
+| `{"stoch_k_gt": 80}` / `{"stoch_k_lt": 20}` / `stoch_d_gt` / `stoch_d_lt` | Stochastic %K/%D, 0..100 (14/3, close-based) |
+| `{"atr_pct_gt": 2}` / `{"atr_pct_lt": 1}` | Close-range proxy of ATR in % (14-bar) |
+| `{"boll_pct_gt": 3}` / `{"boll_pct_lt": -3}` | Price vs 20-bar/2-sigma mid band as % deviation |
 | `{"and": [a, b]}` / `{"or": [a, b]}` / `{"not": a}` | Combinators |
+
+The advanced nodes (MACD/Bollinger/stoch/ATR) use fixed lookbacks and only fire
+once ~45 price bars exist. Because the bot stores a close-only series, the
+"ATR" and "stochastic" variants are close-derived proxies rather than the
+true OHLC versions — thresholds are documented as such above.
 
 The `entry` tree gates buys (still passing the risk manager), and the `exit`
 tree triggers sells while holding. Fixed stop-loss/take-profit/trailing exits
@@ -193,6 +242,10 @@ from the risk config always apply on top. Example:
 
 ```json
 {"btc/rls":"hybrid","eth/rls":{"entry":{"and":[{"sentiment_gt":0.2},{"price_gt_ma":{"kind":"ema","period":20}}]},"exit":{"rsi_gt":75}}}
+```
+
+```json
+{"btc/rls":{"entry":{"and":[{"price_gt_ma":{"kind":"ema","period":21}},{"macd_hist_pct_gt":0}]}}}
 ```
 
 ## AI advisor
@@ -211,6 +264,12 @@ rejects `"ai"` without a key) — supply your own key via `USER_LLM_API_KEY`,
 `/chat/completions` endpoint, sending a JSON snapshot (last `AI_ADVISOR_CONTEXT_BARS`
 closes, RSI, volatility, SMA/EMA, aggregate sentiment, open position, risk
 limits) and maps the reply to a BUY/SELL/HOLD intent:
+
+The snapshot also includes richer indicators when enough history exists:
+MACD histogram as % of price (`macdHistPct`, 12/26/9), Bollinger bands
+(`bollinger`, 20/2), a close-range ATR proxy in % (`atrPct`), and stochastic
+%K/%D (`stochK`/`stochD`, 14/3, close-based). These fields are `null` until
+~45 closes accumulate.
 
 - BUY still passes the risk manager (only the hybrid RSI ceiling is skipped) and
   is ignored while a position is already open.

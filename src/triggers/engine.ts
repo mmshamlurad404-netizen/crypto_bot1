@@ -4,7 +4,17 @@ export type TriggerConditionType =
   | "price_below"
   | "price_above"
   | "sentiment_below"
-  | "sentiment_above";
+  | "sentiment_above"
+  | "volatility_below"
+  | "volatility_above"
+  | "atr_pct_below"
+  | "atr_pct_above"
+  | "stoch_k_below"
+  | "stoch_k_above"
+  | "stoch_d_below"
+  | "stoch_d_above"
+  | "macd_hist_pct_below"
+  | "macd_hist_pct_above";
 
 export type TriggerActionType = "notify" | "halt";
 
@@ -30,7 +40,40 @@ export interface TriggerInput {
   price: number | null;
   rsi: number | null;
   sentiment: number | null;
+  volatility?: number | null;
+  atrPct?: number | null;
+  stochK?: number | null;
+  stochD?: number | null;
+  macdHistPct?: number | null;
 }
+
+export const indicatorTriggerTypes = new Set<TriggerConditionType>([
+  "rsi_below",
+  "rsi_above",
+  "volatility_below",
+  "volatility_above",
+  "atr_pct_below",
+  "atr_pct_above",
+  "stoch_k_below",
+  "stoch_k_above",
+  "stoch_d_below",
+  "stoch_d_above",
+  "macd_hist_pct_below",
+  "macd_hist_pct_above",
+]);
+
+export const richIndicatorTriggerTypes = new Set<TriggerConditionType>([
+  "volatility_below",
+  "volatility_above",
+  "atr_pct_below",
+  "atr_pct_above",
+  "stoch_k_below",
+  "stoch_k_above",
+  "stoch_d_below",
+  "stoch_d_above",
+  "macd_hist_pct_below",
+  "macd_hist_pct_above",
+]);
 
 export interface TriggerEvent {
   ruleId: string;
@@ -53,6 +96,26 @@ function conditionMet(cond: TriggerCondition, input: TriggerInput): boolean {
       return input.sentiment !== null && input.sentiment < cond.value;
     case "sentiment_above":
       return input.sentiment !== null && input.sentiment > cond.value;
+    case "volatility_below":
+      return input.volatility !== null && input.volatility !== undefined && input.volatility < cond.value;
+    case "volatility_above":
+      return input.volatility !== null && input.volatility !== undefined && input.volatility > cond.value;
+    case "atr_pct_below":
+      return input.atrPct !== null && input.atrPct !== undefined && input.atrPct < cond.value;
+    case "atr_pct_above":
+      return input.atrPct !== null && input.atrPct !== undefined && input.atrPct > cond.value;
+    case "stoch_k_below":
+      return input.stochK !== null && input.stochK !== undefined && input.stochK < cond.value;
+    case "stoch_k_above":
+      return input.stochK !== null && input.stochK !== undefined && input.stochK > cond.value;
+    case "stoch_d_below":
+      return input.stochD !== null && input.stochD !== undefined && input.stochD < cond.value;
+    case "stoch_d_above":
+      return input.stochD !== null && input.stochD !== undefined && input.stochD > cond.value;
+    case "macd_hist_pct_below":
+      return input.macdHistPct !== null && input.macdHistPct !== undefined && input.macdHistPct < cond.value;
+    case "macd_hist_pct_above":
+      return input.macdHistPct !== null && input.macdHistPct !== undefined && input.macdHistPct > cond.value;
   }
 }
 
@@ -67,6 +130,21 @@ function currentValue(cond: TriggerCondition, input: TriggerInput): number | nul
     case "sentiment_below":
     case "sentiment_above":
       return input.sentiment;
+    case "volatility_below":
+    case "volatility_above":
+      return input.volatility ?? null;
+    case "atr_pct_below":
+    case "atr_pct_above":
+      return input.atrPct ?? null;
+    case "stoch_k_below":
+    case "stoch_k_above":
+      return input.stochK ?? null;
+    case "stoch_d_below":
+    case "stoch_d_above":
+      return input.stochD ?? null;
+    case "macd_hist_pct_below":
+    case "macd_hist_pct_above":
+      return input.macdHistPct ?? null;
   }
 }
 

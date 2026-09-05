@@ -19,6 +19,15 @@ export interface FillResult {
   simulated: boolean;
 }
 
+export interface RecoveryReport {
+  checked: number;
+  filled: number;
+  canceled: number;
+  failed: number;
+  stillNew: number;
+  skippedMode: number;
+}
+
 export function pairFromKey(key: string): SymbolPair {
   const [src, dst] = key.split("/");
   return { src: src ?? "", dst: dst ?? "", key, market: `${src}-${dst}`.toUpperCase() };
@@ -395,5 +404,26 @@ export class Executor implements OrderGateway {
   async market(pair: SymbolPair, side: "buy" | "sell", amount: number, kind: string): Promise<MarketResult | null> {
     const fill = await this.execute(pair, side, amount, kind, "spot");
     return fill ? { price: fill.price, amount: fill.amount } : null;
+  }
+
+  async recoverLiveOrders(): Promise<RecoveryReport> {
+    const report: RecoveryReport = { checked: 0, filled: 0, canceled: 0, failed: 0, stillNew: 0, skippedMode: 0 };
+    for (const order of this.db.openOrders()) {
+      if (order.dryRun !== this.dryRun) {
+        this.logger.warn({ orderId: order.id, orderDryRun: order.dryRun, currentModeDryRun: this.dryRun }, "boot recovery skipped order from a different run mode");
+        report.skippedMode++;
+        continue;
+      }
+      report.checked++;
+      const res = await this.poll(order.id);
+      if (res.status === "filled") report.filled++;
+      else if (res.status === "canceled") report.canceled++;
+      else if (res.status === "failed") report.failed++;
+      else report.stillNew++;
+    }
+    if (report.checked > 0) {
+      this.logger.info({ report }, "boot recovery finished");
+    }
+    return report;
   }
 }

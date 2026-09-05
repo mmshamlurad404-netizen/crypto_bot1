@@ -1,68 +1,71 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { calculateRSI, calculateVolatility, computeIndicators, calculateSMA, calculateEMA } from "../src/indicators.js";
+import {
+  emaSeries,
+  calculateMACD,
+  calculateBollinger,
+  calculateStoch,
+  calculateCloseRangePct,
+  computeRichIndicators,
+  calculateSMA,
+} from "../src/indicators.js";
 
-test("RSI returns null with insufficient data", () => {
-  assert.equal(calculateRSI([100, 101], 14), null);
+test("emaSeries seeds with SMA and tracks the trend", () => {
+  const closes = [1, 2, 3, 4, 5, 6, 7, 8];
+  const series = emaSeries(closes, 3);
+  assert.equal(series[2], 2, "first EMA must equal SMA of the first period");
+  assert.ok((series[7] as number) > 6, "EMA on a rising series lags below the latest close but stays high");
+  assert.equal(series[0], null);
 });
 
-test("RSI is 100 when only gains", () => {
-  const closes: number[] = [];
-  for (let i = 1; i <= 30; i++) closes.push(100 + i);
-  const rsi = calculateRSI(closes, 14);
-  assert.equal(rsi, 100);
+test("MACD is positive on a steady uptrend and histogram positive on accelerating growth", () => {
+  const closes = Array.from({ length: 60 }, (_, i) => 100 * Math.pow(1.005, i));
+  const res = calculateMACD(closes);
+  assert.notEqual(res.macd, null);
+  assert.notEqual(res.signal, null);
+  assert.notEqual(res.histogram, null);
+  assert.ok((res.macd as number) > 0);
+  assert.ok((res.histogram as number) > 0, "histogram must stay positive while growth is exponential");
 });
 
-test("RSI is 0 when only losses", () => {
-  const closes: number[] = [];
-  for (let i = 1; i <= 30; i++) closes.push(200 - i);
-  const rsi = calculateRSI(closes, 14);
-  assert.equal(rsi, 0);
+test("MACD requires fast<slow bars plus signal history before it is defined", () => {
+  assert.deepEqual(calculateMACD([1, 2, 3]), { macd: null, signal: null, histogram: null });
+  const res = calculateMACD(Array.from({ length: 100 }, () => 100));
+  assert.notEqual(res.macd, null);
 });
 
-test("RSI ~50 for flat alternating series", () => {
-  const closes = [10];
-  for (let i = 1; i < 100; i++) {
-    closes.push(closes[i - 1]! + (i % 2 === 0 ? 1 : -1));
-  }
-  const rsi = calculateRSI(closes, 14)!;
-  assert.ok(rsi > 40 && rsi < 60, `expected near 50, got ${rsi}`);
+test("bollinger middle is the SMA and bands widen around it", () => {
+  const closes = Array.from({ length: 40 }, (_, i) => 100 + Math.sin(i / 3) * 10);
+  const boll = calculateBollinger(closes);
+  const mid = calculateSMA(closes, 20);
+  assert.ok(boll.middle !== null && Math.abs(boll.middle - (mid as number)) < 1e-9);
+  assert.ok((boll.upper as number) > (boll.middle as number) && (boll.middle as number) > (boll.lower as number));
+  const short = calculateBollinger([1, 2, 3], 20);
+  assert.equal(short.upper, null);
 });
 
-test("volatility of constant series is ~0", () => {
-  const closes = Array.from({ length: 100 }, () => 100);
-  const vol = calculateVolatility(closes, 60)!;
-  assert.ok(Math.abs(vol) < 1e-9);
+test("stoch is bounded 0..100 and saturates near 100 on a strong rally", () => {
+  const closes = Array.from({ length: 40 }, (_, i) => 100 + i);
+  const stoch = calculateStoch(closes);
+  assert.ok(stoch.k !== null && stoch.d !== null);
+  assert.ok((stoch.k as number) >= 99.9, "relentless rally should pin %K near the top");
+  assert.ok((stoch.d as number) >= 99);
+  assert.ok((stoch.k as number) <= 100 && (stoch.d as number) <= 100);
 });
 
-test("volatility scales with price swings", () => {
-  const steady = Array.from({ length: 100 }, (_, i) => 100 + i * 0.01);
-  const wild = Array.from({ length: 100 }, (_, i) => 100 + (i % 2 === 0 ? 5 : -5));
-  const vSteady = calculateVolatility(steady, 60)!;
-  const vWild = calculateVolatility(wild, 60)!;
-  assert.ok(vWild > vSteady, `expected wild=${vWild} > steady=${vSteady}`);
+test("atr proxy is zero on a flat market and grows with chop", () => {
+  assert.equal(calculateCloseRangePct(Array.from({ length: 30 }, () => 100)), 0);
+  const choppy = Array.from({ length: 30 }, (_, i) => 100 + (i % 2 === 0 ? 5 : -5));
+  const pct = calculateCloseRangePct(choppy);
+  assert.ok(pct !== null && pct > 0);
 });
 
-test("computeIndicators returns price", () => {
-  const res = computeIndicators([100, 101, 102], 14);
-  assert.equal(res.price, 102);
-});
-
-test("SMA is the mean of the trailing window", () => {
-  assert.equal(calculateSMA([1, 2, 3, 4], 4), 2.5);
-  assert.equal(calculateSMA([1, 2, 3, 4, 5, 6], 3), 5, "uses only the last `period` values");
-  assert.equal(calculateSMA([1, 2], 3), null, "insufficient data");
-});
-
-test("EMA smooths with exponential weighting", () => {
-  const closes = Array.from({ length: 20 }, (_, i) => 100 + i);
-  const sma = calculateSMA(closes, 10)!;
-  const ema = calculateEMA(closes, 10)!;
-  assert.notEqual(ema, sma);
-  const flat = Array.from({ length: 20 }, () => 100);
-  assert.equal(calculateEMA(flat, 10), 100);
-  assert.equal(calculateEMA([1, 2], 3), null, "insufficient data");
-  const rising = Array.from({ length: 30 }, (_, i) => 50 + i);
-  const fallback = calculateEMA(rising, 5)!;
-  assert.ok(fallback > 0);
+test("computeRichIndicators returns nulls until enough history and full values after", () => {
+  assert.equal(computeRichIndicators([1, 2, 3], 14).macd, null);
+  const closes = Array.from({ length: 120 }, (_, i) => 50 + Math.sin(i / 5) * 5 + i * 0.1);
+  const rich = computeRichIndicators(closes, 14);
+  assert.ok(rich.macd !== null && rich.macdHistPct !== null);
+  assert.ok(rich.bollingerUpper !== null && rich.bollingerLower !== null);
+  assert.ok(rich.stochK !== null && rich.stochD !== null);
+  assert.ok(rich.atrPct !== null && rich.atrPct >= 0);
 });

@@ -88,6 +88,8 @@ test("ai advisor buys when the LLM says BUY and risk approves", async () => {
   assert.match(llm.calls[0]!, /"rsi"/);
   assert.match(llm.calls[0]!, /"sentimentScore"/);
   assert.match(llm.calls[0]!, /"lastBars"/);
+  assert.match(llm.calls[0]!, /"macdHistPct"/);
+  assert.match(llm.calls[0]!, /"bollinger"/);
 });
 
 test("ai advisor blocks a BUY when risk vetoes (volatility gate)", async () => {

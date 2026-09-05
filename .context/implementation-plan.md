@@ -1,6 +1,6 @@
 # Implementation Plan — Cryptohopper feature parity
 
-Updated: 2026-09-02
+Updated: 2026-09-05
 Basis: `.context/gap-analysis.md` priority ranking. Scope = on-prem, Nobitex-only, safety-first (DRY_RUN / TRADING_ENABLED stay defaulted to safe).
 
 ## Phase 1 — Validate & instrument what we already trade (do first)
@@ -102,6 +102,19 @@ Basis: `.context/gap-analysis.md` priority ranking. Scope = on-prem, Nobitex-onl
 - Arbitrage `src/strategy/arb.ts` + `src/exchange/arb.ts`: bidirectional fee-adjusted comparison vs Binance bookTicker (`BinanceArbClient`, signed market legs gated on creds), equity-sized legs, cooldown, dry-run simulates round trips locally (never contacts the 2nd exchange), live checks sell-side balance first and remote-leg errors never crash the tick; plain spot round trips, no holding-account concept; excluded from backtests.
 - Docs: `.env.example` MM/ARB blocks + README "Market making (resting quotes)" and "Cross-exchange arbitrage" sections.
 - Tests `tests/mm.test.ts` (8, rebuilt around the real executor gateway incl. stale-quote requote + max-inventory cap), `tests/arb.test.ts` (8 incl. reverse direction + live inventory gate), plus config bool parsing; suite 137/137, typecheck + build clean. Committed `feat(mm): market making + cross-exchange arbitrage`.
+
+### P3-5 Live hardening & recovery (A) + MACD/Bollinger/ATR/stoch indicators (B) — DONE (2026-09-05)
+- Scope chosen from `.context/P3-5-proposal.md`: **A+B**. A = restart/order recovery + reconciliation; B = classic indicators exposed through DSL, trigger engine, and AI context.
+- **A1/A2 risk persistence** `src/risk/manager.ts`: `PersistedRiskState` stored under `meta` key `risk.state_v1` via new `AuditDb.getMetaJSON/setMetaJSON`; halt reason/ts, per-pair cooldowns, trailing stop/TP ratchets, margin trailing state persist on mutation; `restore()` rehydrates. Daily-loss halts clear only when a restart lands on a new UTC day (`halt-cleared`); trigger halts restore (`halt-restored`). Persistence writes are best-effort (never take a tick down).
+- **A3 order recovery** `src/execution/executor.ts`: `recoverLiveOrders(): Promise<RecoveryReport>` polls every DB order still `new`, books down-time fills exactly once via `poll()`, marks canceled/failed, skips dry-run/live mode-mismatched rows.
+- **A4 MM rehydration** `src/strategy/mm.ts`: per-pair `meta` keys `mm.state.<pairKey>` persist costBasis/lastFillAt; `restore()` re-adopts inventory from open positions, cost basis from meta (or entry price), resting quote ids/timestamps from `db.openOrders` (`mm_bid`/`mm_ask`).
+- **Boot wiring** `src/index.ts`: `StrategyLike.restore?()` optional; `buildStrategyPool` passes `allKeys` to MM; `startBot` runs `executor.recoverLiveOrders()` + per-strategy `restore?.()` in an async `boot()` before the first `tick()`.
+- **A5 reconciliation** `src/reconcile.ts` + npm script `reconcile`: `deriveSpotExpectation` (open positions − amount resting in open sell orders per base), compare vs `PortfolioManager.getHoldings()`, `formatReport`, exit 1 on drift; skips `DRY_RUN=true` bots.
+- **B1 indicators** `src/indicators.ts`: `emaSeries`, `calculateMACD` (12/26/9), `calculateBollinger` (20/2), `calculateStoch` (14/3), `calculateCloseRangePct` (close-range ATR proxy), `computeRichIndicators` incl. `macdHistPct` (hist/price) + bands; deterministic on close-only series; history gaps → null.
+- **B2 DSL nodes** `src/strategy/dsl.ts`: `macd_hist_pct_lt/gt`, `stoch_k_lt/gt`, `stoch_d_lt/gt`, `atr_pct_lt/gt`, `boll_pct_lt/gt`; zod updated; warmup ≥45 when advanced nodes present; `hasAdvancedNodes` picks rich vs base indicator path.
+- **B3 triggers** `src/triggers/engine.ts` + `src/config.ts` + `src/index.ts`: new `TriggerConditionTypes` (`volatility_above/below`, `atr_pct_*`, `stoch_k_*`, `stoch_d_*`, `macd_hist_pct_*`); `volatility` added to `TriggerInput`; `currentValue`/`conditionMet` handle all; rich indicators computed only when configured triggers need them (`richIndicatorTriggerTypes`).
+- **B4 AI context** `src/strategy/ai.ts`: LLM snapshot now includes `macdHistPct`, `atrPct`, `stochK/stochD`, nested `bollinger{upper,middle,lower}`.
+- Tests: `tests/recovery.test.ts` (7), `tests/indicators.test.ts` (7), `tests/dsl.test.ts` +6, `tests/triggers.test.ts` +4, `tests/ai.test.ts` snapshot assertions. Suite **158/158**, typecheck + build clean. Docs updated (`.env.example` trigger/DSL/ops blocks, README trigger table, DSL nodes, AI snapshot, restart-safety & reconciliation sections).
 
 ## Explicitly NOT planned
 Multi-exchange abstraction, marketplace/social/mobile/charting SaaS, copy trading, taxes reporting.

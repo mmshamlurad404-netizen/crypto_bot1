@@ -19,6 +19,7 @@ export type StrategySpec = { kind: "hybrid" } | { kind: "ai" } | { kind: "mm" } 
 export interface StrategyLike {
   evaluate(pair: SymbolPair): SignalDecision | Promise<SignalDecision>;
   manage?(pair: SymbolPair): Promise<void> | void;
+  restore?(): void | Promise<void>;
 }
 
 function parseSpec(value: unknown, key: string): StrategySpec {
@@ -86,7 +87,11 @@ export function buildStrategyPool(args: StrategyPoolDeps): Map<string, StrategyL
     : null;
   const mmStrategy =
     gateway && mm
-      ? new MarketMakingStrategy(gateway, db, mm, { tradingActive: tradingActive ?? true, halted: () => risk.isHalted() })
+      ? new MarketMakingStrategy(gateway, db, mm, {
+          tradingActive: tradingActive ?? true,
+          halted: () => risk.isHalted(),
+          allKeys: symbols.map((s) => s.key),
+        })
       : null;
   const arbStrategy =
     gateway && arb && arbClient && nobitexClient

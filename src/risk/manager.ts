@@ -55,6 +55,26 @@ interface MarginTrailingState {
   tpArmed: boolean;
 }
 
+interface PersistedHalt {
+  reason: string;
+  ts: number;
+  kind: "daily_loss" | "trigger";
+}
+
+interface PersistedRiskState {
+  version: 1;
+  halted: PersistedHalt | null;
+  cooldown: [string, number][];
+  trailing: { key: string; positionId: number; peak: number; stopArmed: boolean; tpArmed: boolean }[];
+  marginTrailing: { key: string; positionId: number; trough: number; stopArmed: boolean; tpArmed: boolean }[];
+}
+
+const RISK_STATE_KEY = "risk.state_v1";
+
+function utcDay(ts: number): string {
+  return new Date(ts).toISOString().slice(0, 10);
+}
+
 export class RiskManager {
   private db: AuditDb;
   private priceFeed: PriceFeed;
@@ -77,6 +97,44 @@ export class RiskManager {
       marginTakeProfitPct: config.marginTakeProfitPct ?? config.takeProfitPct,
     };
     this.now = now;
+    this.restore();
+  }
+
+  private persist(): void {
+    const state: PersistedRiskState = {
+      version: 1,
+      halted: this.haltMeta,
+      cooldown: [...this.lastTradeAt.entries()],
+      trailing: [...this.trailing.entries()].map(([key, t]) => ({ key, ...t })),
+      marginTrailing: [...this.marginTrailing.entries()].map(([key, t]) => ({ key, ...t })),
+    };
+    try {
+      this.db.setMetaJSON(RISK_STATE_KEY, state);
+    } catch {
+      // persistence must never take down a tick
+    }
+  }
+
+  private haltMeta: PersistedHalt | null = null;
+
+  restore(): void {
+    const saved = this.db.getMetaJSON<PersistedRiskState>(RISK_STATE_KEY);
+    if (!saved || saved.version !== 1) return;
+    this.lastTradeAt = new Map(saved.cooldown ?? []);
+    this.trailing = new Map((saved.trailing ?? []).map((t) => [t.key, { positionId: t.positionId, peak: t.peak, stopArmed: t.stopArmed, tpArmed: t.tpArmed }]));
+    this.marginTrailing = new Map(
+      (saved.marginTrailing ?? []).map((t) => [t.key, { positionId: t.positionId, trough: t.trough, stopArmed: t.stopArmed, tpArmed: t.tpArmed }])
+    );
+    if (saved.halted) {
+      const sameDay = utcDay(saved.halted.ts) === utcDay(this.now());
+      if (!sameDay && saved.halted.kind === "daily_loss") {
+        this.logEvent(null, "halt-cleared", "new day: daily-loss halt cleared on restart", { ts: saved.halted.ts });
+        return;
+      }
+      this.haltMeta = saved.halted;
+      this.tradingHalted = saved.halted.reason;
+      this.logEvent(null, "halt-restored", `trading halt restored after restart: ${saved.halted.reason}`, { ts: saved.halted.ts, kind: saved.halted.kind });
+    }
   }
 
   sizeByVolatility(volatility: number | null): number {
@@ -198,7 +256,9 @@ export class RiskManager {
     if (prevEquity !== null && equity < prevEquity * (1 - this.config.maxDailyLossPct / 100)) {
       const msg = `daily loss ${((1 - equity / prevEquity) * 100).toFixed(2)}% exceeds max ${this.config.maxDailyLossPct}%`;
       this.tradingHalted = msg;
+      this.haltMeta = { reason: msg, ts: this.now(), kind: "daily_loss" };
       this.logEvent(null, "halt-daily-loss", msg, { equity, prevEquity });
+      this.persist();
       return { allowed: false, reason: `trading halted: ${msg}`, halted: true, sizePct: 0 };
     }
 
@@ -248,23 +308,33 @@ export class RiskManager {
   checkTrailingStops(pair: SymbolPair, price: number): TrailingCheck {
     const pos = this.db.getOpenPosition(pair.key);
     if (!pos) {
-      this.trailing.delete(pair.key);
+      if (this.trailing.has(pair.key)) {
+        this.trailing.delete(pair.key);
+        this.persist();
+      }
       return { hit: false, reason: null, kind: null, stopArmed: false, tpArmed: false };
     }
     let st = this.trailing.get(pair.key);
+    let dirty = false;
     if (!st || st.positionId !== pos.id) {
       st = { positionId: pos.id, peak: pos.entryPrice, stopArmed: false, tpArmed: false };
       this.trailing.set(pair.key, st);
+      dirty = true;
     }
-    if (price > st.peak) st.peak = price;
+    if (price > st.peak) {
+      st.peak = price;
+      dirty = true;
+    }
 
     const trailStopPct = this.config.trailingStopPct;
     if (!st.stopArmed && trailStopPct > 0 && price >= pos.entryPrice * (1 + this.config.trailingStopActivatePct / 100)) {
       st.stopArmed = true;
+      dirty = true;
     }
     if (st.stopArmed && trailStopPct > 0) {
       const trailStop = st.peak * (1 - trailStopPct / 100);
       if (price <= trailStop) {
+        if (dirty) this.persist();
         return {
           hit: true,
           reason: `trailing stop ${trailStopPct}% (peak ${st.peak})`,
@@ -278,10 +348,12 @@ export class RiskManager {
     const trailTpPct = this.config.trailingTpPct;
     if (!st.tpArmed && trailTpPct > 0 && price >= pos.entryPrice * (1 + this.config.trailingTpActivatePct / 100)) {
       st.tpArmed = true;
+      dirty = true;
     }
     if (st.tpArmed && trailTpPct > 0) {
       const trailTp = st.peak * (1 - trailTpPct / 100);
       if (price <= trailTp) {
+        if (dirty) this.persist();
         return {
           hit: true,
           reason: `trailing take-profit ${trailTpPct}% (peak ${st.peak})`,
@@ -292,11 +364,13 @@ export class RiskManager {
       }
     }
 
+    if (dirty) this.persist();
     return { hit: false, reason: null, kind: null, stopArmed: st.stopArmed, tpArmed: st.tpArmed };
   }
 
   recordTrade(pair: SymbolPair): void {
     this.lastTradeAt.set(pair.key, this.now());
+    this.persist();
   }
 
   checkMarginStopLoss(pair: SymbolPair, price: number): { hit: boolean; reason: string | null } {
@@ -322,23 +396,33 @@ export class RiskManager {
   checkMarginTrailingStops(pair: SymbolPair, price: number): TrailingCheck {
     const pos = this.db.getOpenMarginPosition(pair.key);
     if (!pos) {
-      this.marginTrailing.delete(pair.key);
+      if (this.marginTrailing.has(pair.key)) {
+        this.marginTrailing.delete(pair.key);
+        this.persist();
+      }
       return { hit: false, reason: null, kind: null, stopArmed: false, tpArmed: false };
     }
     let st = this.marginTrailing.get(pair.key);
+    let dirty = false;
     if (!st || st.positionId !== pos.id) {
       st = { positionId: pos.id, trough: pos.entryPrice, stopArmed: false, tpArmed: false };
       this.marginTrailing.set(pair.key, st);
+      dirty = true;
     }
-    if (price < st.trough) st.trough = price;
+    if (price < st.trough) {
+      st.trough = price;
+      dirty = true;
+    }
 
     const trailStopPct = this.config.trailingStopPct;
     if (!st.stopArmed && trailStopPct > 0 && price <= pos.entryPrice * (1 - this.config.trailingStopActivatePct / 100)) {
       st.stopArmed = true;
+      dirty = true;
     }
     if (st.stopArmed && trailStopPct > 0) {
       const trailStop = st.trough * (1 + trailStopPct / 100);
       if (price >= trailStop) {
+        if (dirty) this.persist();
         return {
           hit: true,
           reason: `margin trailing stop ${trailStopPct}% (trough ${st.trough})`,
@@ -352,10 +436,12 @@ export class RiskManager {
     const trailTpPct = this.config.trailingTpPct;
     if (!st.tpArmed && trailTpPct > 0 && price <= pos.entryPrice * (1 - this.config.trailingTpActivatePct / 100)) {
       st.tpArmed = true;
+      dirty = true;
     }
     if (st.tpArmed && trailTpPct > 0) {
       const trailTp = st.trough * (1 + trailTpPct / 100);
       if (price >= trailTp) {
+        if (dirty) this.persist();
         return {
           hit: true,
           reason: `margin trailing take-profit ${trailTpPct}% (trough ${st.trough})`,
@@ -366,12 +452,15 @@ export class RiskManager {
       }
     }
 
+    if (dirty) this.persist();
     return { hit: false, reason: null, kind: null, stopArmed: st.stopArmed, tpArmed: st.tpArmed };
   }
 
   haltTrading(reason: string): void {
     this.tradingHalted = reason;
+    this.haltMeta = { reason, ts: this.now(), kind: "trigger" };
     this.logEvent(null, "halt-trigger", reason, null);
+    this.persist();
   }
 
   isHalted(): boolean {

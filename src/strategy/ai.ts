@@ -1,5 +1,5 @@
 import { AuditDb } from "../db.js";
-import { computeIndicators, calculateSMA, calculateEMA } from "../indicators.js";
+import { computeIndicators, computeRichIndicators, calculateSMA, calculateEMA } from "../indicators.js";
 import { PriceFeed } from "../market/priceFeed.js";
 import { PortfolioManager } from "../portfolio/manager.js";
 import { RiskManager } from "../risk/manager.js";
@@ -139,6 +139,7 @@ export class AiAdvisorStrategy implements StrategyLike {
     const sma20 = calculateSMA(closes, 20);
     const sma50 = calculateSMA(closes, 50);
     const ema20 = calculateEMA(closes, 20);
+    const rich = computeRichIndicators(closes, this.config.rsiPeriod);
     const hi = Math.max(...window);
     const lo = Math.min(...window);
     return JSON.stringify({
@@ -152,6 +153,15 @@ export class AiAdvisorStrategy implements StrategyLike {
       sma20: sma20 !== null ? Number(sma20.toFixed(2)) : null,
       sma50: sma50 !== null ? Number(sma50.toFixed(2)) : null,
       ema20: ema20 !== null ? Number(ema20.toFixed(2)) : null,
+      macdHistPct: rich.macdHistPct !== null ? Number(rich.macdHistPct.toFixed(3)) : null,
+      atrPct: rich.atrPct !== null ? Number(rich.atrPct.toFixed(3)) : null,
+      stochK: rich.stochK !== null ? Number(rich.stochK.toFixed(2)) : null,
+      stochD: rich.stochD !== null ? Number(rich.stochD.toFixed(2)) : null,
+      bollinger: {
+        upper: rich.bollingerUpper !== null ? Number(rich.bollingerUpper.toFixed(2)) : null,
+        middle: rich.bollingerMiddle !== null ? Number(rich.bollingerMiddle.toFixed(2)) : null,
+        lower: rich.bollingerLower !== null ? Number(rich.bollingerLower.toFixed(2)) : null,
+      },
       sentimentScore: Number(sentiment.score.toFixed(3)),
       sentimentSources: sentiment.count,
       position: openPos

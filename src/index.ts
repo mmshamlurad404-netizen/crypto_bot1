@@ -12,7 +12,8 @@ import { RiskManager } from "./risk/manager.js";
 import { Executor } from "./execution/executor.js";
 import { DcaLadder } from "./strategy/dca.js";
 import { TriggerEngine } from "./triggers/engine.js";
-import { computeIndicators } from "./indicators.js";
+import { computeIndicators, computeRichIndicators } from "./indicators.js";
+import { richIndicatorTriggerTypes } from "./triggers/engine.js";
 import { buildStrategyPool } from "./config/pools.js";
 import { TelegramNotifier } from "./alerts/telegram.js";
 import { DailyReporter } from "./alerts/report.js";
@@ -156,6 +157,7 @@ export function startBot(config: BotConfig, baseLogger: Logger): BotRuntime {
   );
 
   let running = true;
+  let booted = false;
 
   async function executeDecision(decision: SignalDecision): Promise<void> {
     const pair = config.symbols.find((s) => s.key === decision.symbol);
@@ -330,16 +332,29 @@ export function startBot(config: BotConfig, baseLogger: Logger): BotRuntime {
 
   async function tick(): Promise<void> {
     if (!running) return;
+    if (!booted) return;
     try {
       await priceFeed.poll();
       await portfolio.refresh();
       const state = portfolio.state();
+      const needRichTrig = config.triggers.some((r) => richIndicatorTriggerTypes.has(r.when.type));
       for (const pair of config.symbols) {
         const closes = priceFeed.getCloses(pair.key);
-        const { rsi } = computeIndicators(closes, config.rsiPeriod);
+        const rich = needRichTrig ? computeRichIndicators(closes, config.rsiPeriod) : null;
+        const { rsi, volatility } = rich ?? computeIndicators(closes, config.rsiPeriod);
         const sentiment = sentimentEngine.snapshot(pair.src).score;
         const price = priceFeed.getLatestPrice(pair.key);
-        for (const ev of triggers.evaluate({ symbol: pair.key, price, rsi, sentiment })) {
+        for (const ev of triggers.evaluate({
+          symbol: pair.key,
+          price,
+          rsi,
+          sentiment,
+          volatility,
+          atrPct: rich?.atrPct ?? null,
+          stochK: rich?.stochK ?? null,
+          stochD: rich?.stochD ?? null,
+          macdHistPct: rich?.macdHistPct ?? null,
+        })) {
           logger.warn({ trigger: ev.ruleId, symbol: ev.symbol, action: ev.actionType }, "trigger fired");
           db.insertRiskEvent({
             ts: new Date().toISOString(),
@@ -399,7 +414,34 @@ export function startBot(config: BotConfig, baseLogger: Logger): BotRuntime {
   }
 
   const pollTimer = setInterval(() => void tick(), config.pricePollMs);
-  void tick();
+
+  async function boot(): Promise<void> {
+    try {
+      const report = await executor.recoverLiveOrders();
+      if (report.checked > 0 || report.skippedMode > 0) {
+        logger.info({ report }, "boot recovery summary");
+        db.insertRiskEvent({
+          ts: new Date().toISOString(),
+          symbol: null,
+          kind: "recovery",
+          message: `boot recovery: ${report.checked} checked, ${report.filled} filled, ${report.canceled} canceled, ${report.stillNew} still resting, ${report.skippedMode} skipped (mode mismatch)`,
+          data: null,
+        });
+      }
+    } catch (err) {
+      logger.error({ error: (err as Error).message }, "boot recovery failed");
+    }
+    for (const strategy of strategyPool.values()) {
+      try {
+        await strategy.restore?.();
+      } catch (err) {
+        logger.error({ error: (err as Error).message }, "strategy state restore failed");
+      }
+    }
+    booted = true;
+    await tick();
+  }
+  void boot();
   void scheduleDaily(reporter, config.dailyReportTime);
 
   return {

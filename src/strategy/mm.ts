@@ -19,6 +19,7 @@ export interface MmOptions {
   tradingActive?: boolean;
   halted?: () => boolean;
   now?: () => number;
+  allKeys?: string[];
 }
 
 interface PairMmState {
@@ -31,7 +32,16 @@ interface PairMmState {
   lastFillAt: number;
 }
 
+interface PersistedMmState {
+  costBasis: number;
+  lastFillAt: number;
+}
+
 const EPS = 1e-12;
+
+function stateMetaKey(pairKey: string): string {
+  return `mm.state.${pairKey}`;
+}
 
 export class MarketMakingStrategy implements StrategyLike {
   private gateway: OrderGateway;
@@ -40,6 +50,7 @@ export class MarketMakingStrategy implements StrategyLike {
   private tradingActive: boolean;
   private halted: () => boolean;
   private now: () => number;
+  private allKeys: string[];
   private states: Map<string, PairMmState> = new Map();
 
   constructor(gateway: OrderGateway, db: AuditDb, config: MmStrategyConfig, options: MmOptions = {}) {
@@ -49,6 +60,51 @@ export class MarketMakingStrategy implements StrategyLike {
     this.tradingActive = options.tradingActive ?? true;
     this.halted = options.halted ?? (() => false);
     this.now = options.now ?? Date.now;
+    this.allKeys = options.allKeys ?? [];
+  }
+
+  private persistState(pairKey: string, state: PairMmState): void {
+    const saved: PersistedMmState = { costBasis: state.costBasis, lastFillAt: state.lastFillAt };
+    try {
+      this.db.setMetaJSON(stateMetaKey(pairKey), saved);
+    } catch {
+      // persistence must never take down a tick
+    }
+  }
+
+  private adopted = false;
+
+  restore(): void {
+    if (this.adopted) return;
+    this.adopted = true;
+    const keys =
+      this.allKeys.length > 0 ? this.allKeys : [...new Set([...this.db.openPositions().map((p) => p.symbol), ...this.db.openOrders().map((o) => o.symbol)])];
+    for (const key of keys) {
+      const pair: SymbolPair = { src: key.split("/")[0] ?? "", dst: key.split("/")[1] ?? "", key, market: `${key.replace("/", "-")}`.toUpperCase() };
+      if (!this.enabledFor(pair)) continue;
+      const s = this.stateFor(pair);
+      const saved = this.db.getMetaJSON<PersistedMmState>(stateMetaKey(key));
+      const pos = this.db.getOpenPosition(key);
+      if (!pos || pos.amount <= EPS) {
+        s.inventory = 0;
+        s.costBasis = 0;
+      } else {
+        s.inventory = pos.amount;
+        s.costBasis = saved && saved.costBasis > 0 ? saved.costBasis : pos.entryPrice;
+      }
+      s.lastFillAt = saved && saved.lastFillAt > 0 ? saved.lastFillAt : 0;
+      for (const order of this.db.openOrders(key)) {
+        const placedAt = Number.isFinite(Date.parse(order.ts)) ? Date.parse(order.ts) : this.now();
+        if (order.kind === "mm_bid" && order.side === "buy" && s.bidOrderId === null) {
+          s.bidOrderId = order.id;
+          s.bidPlacedAt = placedAt;
+        } else if (order.kind === "mm_ask" && order.side === "sell" && s.askOrderId === null) {
+          s.askOrderId = order.id;
+          s.askPlacedAt = placedAt;
+        }
+      }
+      this.persistState(key, s);
+    }
   }
 
   evaluate(pair: SymbolPair): SignalDecision {
@@ -135,6 +191,7 @@ export class MarketMakingStrategy implements StrategyLike {
         if (cancelled) state.askOrderId = null;
       }
     }
+    this.persistState(pair.key, state);
   }
 
   private async requote(pair: SymbolPair, state: PairMmState, now: number, bidPrice: number, bidAmount: number, askPrice: number, askAmount: number): Promise<void> {
@@ -152,6 +209,7 @@ export class MarketMakingStrategy implements StrategyLike {
         state.askPlacedAt = now;
       }
     }
+    this.persistState(pair.key, state);
   }
 
   private round(price: number): number {
@@ -182,6 +240,7 @@ export class MarketMakingStrategy implements StrategyLike {
         state.inventory = 0;
         state.costBasis = 0;
         state.lastFillAt = now;
+        this.persistState(pair.key, state);
         this.log(pair, "SELL", `mm stop-loss market close (cost ${state.costBasis})`, res.price, res.amount);
       }
       return;

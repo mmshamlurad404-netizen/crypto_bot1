@@ -223,6 +223,20 @@ export class AuditDb {
     return row ? row.value : null;
   }
 
+  getMetaJSON<T>(key: string): T | null {
+    const raw = this.getMeta(key);
+    if (raw === null) return null;
+    try {
+      return JSON.parse(raw) as T;
+    } catch {
+      return null;
+    }
+  }
+
+  setMetaJSON(key: string, value: unknown): void {
+    this.setMeta(key, JSON.stringify(value));
+  }
+
   insertSignal(signal: { ts: string; symbol: string; action: string; rsi: number | null; sentiment: number | null; price: number | null; seriesLen: number | null; reason: string; details: string | null }): number {
     const res = this.db
       .prepare(

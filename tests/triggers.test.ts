@@ -147,3 +147,39 @@ test("haltTrading halts subsequent buy approval", () => {
   assert.equal(verdict.halted, true);
   assert.match(verdict.reason!, /trading halted/i);
 });
+
+test("supports volatility/atr/stoch/macd indicator conditions", () => {
+  const engine = new TriggerEngine([
+    rule({ id: "v", when: { type: "volatility_above", value: 0.02 } }),
+    rule({ id: "atr", when: { type: "atr_pct_above", value: 3 } }),
+    rule({ id: "k", when: { type: "stoch_k_below", value: 20 } }),
+    rule({ id: "d", when: { type: "stoch_d_above", value: 80 } }),
+    rule({ id: "macd", when: { type: "macd_hist_pct_above", value: 0 } }),
+  ]);
+  const events = engine.evaluate({
+    symbol: "btc/rls",
+    price: 100,
+    rsi: 40,
+    sentiment: 0,
+    volatility: 0.03,
+    atrPct: 4,
+    stochK: 10,
+    stochD: 90,
+    macdHistPct: 0.5,
+  });
+  assert.deepEqual(events.map((e) => e.ruleId).sort(), ["atr", "d", "k", "macd", "v"]);
+});
+
+test("indicator conditions never fire when their values are unavailable", () => {
+  const engine = new TriggerEngine([rule({ id: "atr", when: { type: "atr_pct_below", value: 10 } })]);
+  assert.equal(engine.evaluate({ symbol: "btc/rls", price: 100, rsi: null, sentiment: 0, atrPct: null }).length, 0);
+});
+
+test("config parses advanced indicator trigger types", () => {
+  const cfg = loadConfig({
+    SYMBOLS: "btc/rls",
+    TRIGGERS:
+      '[{"id":"m","symbol":"btc/rls","when":{"type":"macd_hist_pct_above","value":0},"then":{"type":"notify"}},{"id":"v","symbol":"btc/rls","when":{"type":"volatility_below","value":0.05},"then":{"type":"notify"}}]',
+  });
+  assert.equal(cfg.triggers.length, 2);
+});

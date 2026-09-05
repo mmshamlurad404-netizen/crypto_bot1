@@ -180,3 +180,61 @@ test("config rejects STRATEGY_POOLS referencing a symbol not in SYMBOLS", () => 
     /not in SYMBOLS/
   );
 });
+
+test("advanced indicator nodes evaluate against provided context", () => {
+  const ctx = {
+    price: 100,
+    rsi: 40,
+    volatility: 0.01,
+    sentiment: 0,
+    closes: [],
+    macdHistPct: 0.5,
+    stochK: 80,
+    stochD: 20,
+    atrPct: 2.5,
+    bollPct: 5,
+  };
+  assert.equal(evaluateNode({ macd_hist_pct_gt: 0.4 }, ctx), true);
+  assert.equal(evaluateNode({ macd_hist_pct_gt: 0.6 }, ctx), false);
+  assert.equal(evaluateNode({ macd_hist_pct_lt: 0.6 }, ctx), true);
+  assert.equal(evaluateNode({ stoch_k_gt: 70 }, ctx), true);
+  assert.equal(evaluateNode({ stoch_k_lt: 70 }, ctx), false);
+  assert.equal(evaluateNode({ stoch_d_lt: 30 }, ctx), true);
+  assert.equal(evaluateNode({ atr_pct_gt: 2 }, ctx), true);
+  assert.equal(evaluateNode({ atr_pct_lt: 2 }, ctx), false);
+  assert.equal(evaluateNode({ boll_pct_gt: 4 }, ctx), true, "price 5% above the mid band exceeds a +4% filter");
+  assert.equal(evaluateNode({ boll_pct_lt: -1 }, ctx), false, "price above the mid band is not below the band");
+});
+
+test("advanced nodes return false when the indicator context is missing/null", () => {
+  const ctx = { price: 100, rsi: null, volatility: null, sentiment: null, closes: [] };
+  assert.equal(evaluateNode({ macd_hist_pct_gt: 0 }, ctx), false);
+  assert.equal(evaluateNode({ stoch_d_lt: 30 }, ctx), false);
+  assert.equal(evaluateNode({ atr_pct_gt: 1 }, ctx), false);
+  assert.equal(evaluateNode({ boll_pct_lt: 0 }, ctx), false);
+});
+
+test("advanced dsl requires a longer warmup before indicators are valid", () => {
+  const { db, feed, portfolio, risk, sentiment } = baseSetup();
+  const dsl = new DslStrategy(db, feed, sentiment, portfolio, risk, 14, parseDsl({ entry: { macd_hist_pct_gt: 0 } }));
+  pushCloses(feed, "btc/rls", Array.from({ length: 20 }, (_, i) => 100 + i));
+  const decision = dsl.evaluate(symbols[0]!);
+  assert.equal(decision.action, "HOLD");
+  assert.match(decision.reason!, /warming up/);
+});
+
+test("dsl buys when MACD histogram turns positive on accelerating growth", () => {
+  const { db, feed, portfolio, risk, sentiment } = baseSetup();
+  const dsl = new DslStrategy(db, feed, sentiment, portfolio, risk, 14, parseDsl({ entry: { macd_hist_pct_gt: 0 } }));
+  pushCloses(feed, "btc/rls", Array.from({ length: 60 }, (_, i) => 100 * Math.pow(1.005, i)));
+  const decision = dsl.evaluate(symbols[0]!);
+  assert.equal(decision.action, "BUY", "positive MACD histogram on an uptrend should satisfy the entry rule");
+});
+
+test("dsl buys when price trends far above the upper bollinger band", () => {
+  const { db, feed, portfolio, risk, sentiment } = baseSetup();
+  const dsl = new DslStrategy(db, feed, sentiment, portfolio, risk, 14, parseDsl({ entry: { boll_pct_gt: 3 } }));
+  pushCloses(feed, "btc/rls", Array.from({ length: 60 }, (_, i) => 100 + i * 0.67));
+  const decision = dsl.evaluate(symbols[0]!);
+  assert.equal(decision.action, "BUY", "a strong steady uptrend must push price far above the 20-bar mid band");
+});
